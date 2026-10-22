@@ -14,9 +14,9 @@
 
 ### Требования
 
-- PHP 8.4 или 8.5
+- PHP 8.4+
+- Расширения: `ext-pdo`, `ext-pdo_sqlite`, `ext-sodium`, `ext-mbstring`, `ext-pcntl`, `ext-sockets`, `ext-curl`
 - Composer 2
-- Расширения PHP: `pdo`, `pdo_sqlite`, `sodium`, `mbstring`, `json`, `session`
 - Git
 
 ### Установка
@@ -185,7 +185,7 @@ src/
     Middleware/              #   SessionMiddleware
   Infrastructure/           # Инфраструктура
     Database.php            #   PDO/SQLite с миграциями
-    Encryption.php          #   Sodium (XChaCha20-Poly1305)
+    Encryption.php          #   Sodium (XSalsa20-Poly1305)
     JobQueue.php            #   Очередь заданий (SQLite)
     Config.php              #   Загрузка конфигурации
 migrations/                 # SQL-миграции
@@ -206,7 +206,7 @@ tests/
 2. **Новый фоновый job:** создайте обработчик в `Application/`, зарегистрируйте
    в `bin/worker.php` (секция `match`).
 3. **Новый HTTP-маршрут:** создайте контроллер в `Http/Controllers/`,
-   зарегистрируйте в `public/index.php`.
+   зарегистрируйте в `src/Infrastructure/SlimAppFactory.php`.
 4. **Вебхуки:** добавьте контроллер-обработчик, зарегистрируйте маршрут.
    Для аутентификации вебхука используйте сохранённый секрет подписки (не
    придумывайте встроенную подпись InSales — её нет в контракте).

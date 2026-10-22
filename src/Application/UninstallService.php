@@ -92,16 +92,19 @@ final readonly class UninstallService
             }
 
             // 2. Если не авторизовались по store, пробуем по candidate
+            // Перебираем ВСЕ candidates: при нескольких pending один из них может
+            // иметь правильный пароль.
             if (!$authorized) {
-                $candidate = $this->db->fetch(
+                $candidates = $this->db->fetchAll(
                     'SELECT * FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
                     ['store_id' => $insalesId, 'shop' => $shop],
                 );
 
-                if ($candidate !== null) {
+                foreach ($candidates as $candidate) {
                     $candidatePassword = $this->encryption->decrypt((string) $candidate['encrypted_password']);
                     if (hash_equals($candidatePassword, $token)) {
                         $authorized = true;
+                        break;
                     }
                 }
             }

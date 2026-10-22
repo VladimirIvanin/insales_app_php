@@ -33,6 +33,16 @@ final class ApplicationTest extends TestCase
         $this->app = SlimAppFactory::create(__DIR__ . '/../..');
         $this->db = $this->app->getContainer()->get(Database::class);
 
+        // Safety: refuse to clean production-like database paths
+        $dbPathRef = new \ReflectionProperty($this->db, 'pdo');
+        $dbPathRef->setAccessible(true);
+        /** @var \PDO $pdo */
+        $pdo = $dbPathRef->getValue($this->db);
+        $dbPath = $pdo->query('PRAGMA database_list')->fetch(\PDO::FETCH_ASSOC)['file'] ?? '';
+        if (str_contains($dbPath, 'app.sqlite3')) {
+            self::fail('Test database points to production path: ' . $dbPath);
+        }
+
         // Clean state
         $this->db->execute('DELETE FROM stores');
         $this->db->execute('DELETE FROM install_candidates');

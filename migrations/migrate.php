@@ -14,4 +14,5 @@ return [
     2 => file_get_contents(__DIR__ . '/002_fix_install_candidates_fk.sql'),
     3 => file_get_contents(__DIR__ . '/003_add_candidate_version.sql'),
     4 => file_get_contents(__DIR__ . '/004_add_generation_tracking.sql'),
+    5 => file_get_contents(__DIR__ . '/005_add_lease_token.sql'),
 ];

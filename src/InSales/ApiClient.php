@@ -220,10 +220,11 @@ final readonly class ApiClient
         ]);
 
         try {
+            // Используем stream для bounded чтения — предотвращает OOM при больших ответах
             $response = $this->httpClient->request($method, $url, [
                 'headers' => $headers,
                 'body' => $requestBody,
-                'stream' => false,
+                'stream' => true,
             ]);
 
             // SSRF check: if redirected (should not happen as we disabled redirects)
@@ -232,15 +233,28 @@ final readonly class ApiClient
                 $this->logger->warning('Unexpected redirect prevented', ['url' => $url]);
             }
 
-            $rawBody = (string) $response->getBody();
-
-            if (\strlen($rawBody) > self::MAX_RESPONSE_BYTES) {
-                throw new ApiException($response->getStatusCode(), 'API response too large');
-            }
-
             $statusCode = $response->getStatusCode();
             $usage = $response->getHeaderLine('API-Usage-Limit') ?: null;
             $retryAfter = $response->getHeaderLine('Retry-After') ?: null;
+
+            // Bounded streaming: читаем не более MAX_RESPONSE_BYTES
+            $bodyStream = $response->getBody();
+            $chunks = [];
+            $totalLen = 0;
+            $chunkSize = 8192; // 8 KB chunks
+            while (!$bodyStream->eof()) {
+                $chunk = $bodyStream->read($chunkSize);
+                $chunkLen = \strlen($chunk);
+                if ($totalLen + $chunkLen > self::MAX_RESPONSE_BYTES) {
+                    // Превышаем лимит — прерываем чтение, закрываем стрим
+                    $bodyStream->close();
+                    throw new ApiException($statusCode, 'API response too large');
+                }
+                $chunks[] = $chunk;
+                $totalLen += $chunkLen;
+            }
+            $bodyStream->close();
+            $rawBody = implode('', $chunks);
 
             $this->logger->debug('API response', [
                 'status' => $statusCode,

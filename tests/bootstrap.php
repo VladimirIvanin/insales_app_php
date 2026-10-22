@@ -8,8 +8,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-// Set test environment
+// Set test environment — APP_DB_PATH MUST be set BEFORE any ContainerFactory/Config load
 $_ENV['APP_ENV'] = 'test';
+$_ENV['APP_DB_PATH'] = __DIR__ . '/../runtime/test.sqlite3';
 $_ENV['INSALES_APP_ID'] = 'test-app-id';
 $_ENV['INSALES_APP_SECRET'] = 'test-app-secret';
 $_ENV['ALLOWED_SHOPS'] = 'test.myshop.ru,127.0.0.1';

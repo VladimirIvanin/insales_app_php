@@ -23,9 +23,13 @@ final readonly class JobQueue
     private const CLAIM_TIMEOUT = 60; // seconds before a claimed job is considered stuck
     private const CLEANUP_AFTER = 3600; // remove completed/failed jobs after 1 hour
 
+    /**
+     * @param \Closure(array<string, mixed> $failedJob): void|null $onFinalFail
+     */
     public function __construct(
         private Database $db,
         private string $queueName = 'default',
+        private ?\Closure $onFinalFail = null,
     ) {
         // Cleanup stale claims on construction
         $this->db->execute(
@@ -118,6 +122,9 @@ final readonly class JobQueue
      * Claim the next pending job.
      *
      * Атомарно: UPDATE … WHERE … RETURNING с учётом scheduled_at.
+     * Каждому claim присваивается уникальный lease_token, который
+     * затем проверяется в complete/fail/release — это гарантирует,
+     * что только владелец текущего claim может завершить задачу.
      * Зависшие running-задачи сбрасываются в pending перед каждым claim.
      *
      * @return array<string, mixed>|null Job data or null if none available
@@ -126,9 +133,10 @@ final readonly class JobQueue
     {
         // Периодически восстанавливаем stale задачи (не только в конструкторе)
         $this->recoverStale();
+        $leaseToken = bin2hex(random_bytes(16));
         $job = $this->db->fetch(
             'UPDATE jobs
-             SET status = :running, claimed_at = :now
+             SET status = :running, claimed_at = :now, lease_token = :token
              WHERE id = (
                  SELECT id FROM jobs
                  WHERE queue = :queue
@@ -141,6 +149,7 @@ final readonly class JobQueue
             [
                 'running' => 'running',
                 'now' => time(),
+                'token' => $leaseToken,
                 'queue' => $this->queueName,
                 'pending' => 'pending',
                 'now_sched' => time(),
@@ -158,28 +167,48 @@ final readonly class JobQueue
 
     /**
      * Mark job as completed.
+     *
+     * Требует lease_token для предотвращения модификации
+     * завершённых или перевыданных задач чужим воркером.
      */
-    public function complete(int $jobId): void
+    public function complete(int $jobId, string $leaseToken): void
     {
         $this->db->execute(
-            'UPDATE jobs SET status = :completed, completed_at = :now WHERE id = :id',
-            ['completed' => 'completed', 'now' => time(), 'id' => $jobId],
+            'UPDATE jobs SET status = :completed, completed_at = :now
+             WHERE id = :id AND status = :running AND lease_token = :token',
+            [
+                'completed' => 'completed',
+                'now' => time(),
+                'id' => $jobId,
+                'running' => 'running',
+                'token' => $leaseToken,
+            ],
         );
     }
 
     /**
      * Mark job as failed. Retries if retries_left > 0.
      *
+     * Требует lease_token для предотвращения модификации
+     * завершённых или перевыданных задач чужим воркером.
+     *
      * @return bool True if the job will be retried
      */
-    public function fail(int $jobId, string $error = ''): bool
+    public function fail(int $jobId, string $leaseToken, string $error = ''): bool
     {
-        $job = $this->db->fetch('SELECT * FROM jobs WHERE id = :id', ['id' => $jobId]);
+        // Получаем задачу и проверяем lease_token + running за один SELECT
+        $job = $this->db->fetch(
+            'SELECT * FROM jobs WHERE id = :id AND status = :running AND lease_token = :token',
+            ['id' => $jobId, 'running' => 'running', 'token' => $leaseToken],
+        );
 
         if ($job === null) {
+            // Job не наша или уже не running — не трогаем
             return false;
         }
 
+        // Обрезаем ошибку один раз
+        $truncatedError = mb_substr($error, 0, 1000);
         $retriesLeft = (int) ($job['retries_left'] ?? 0) - 1;
 
         if ($retriesLeft > 0) {
@@ -187,12 +216,12 @@ final readonly class JobQueue
             $backoff = (self::MAX_RETRIES - $retriesLeft) * 10; // 10s, 20s...
             $this->db->execute(
                 'UPDATE jobs SET status = :pending, retries_left = :retries, error = :error,
-                 scheduled_at = :scheduled, claimed_at = NULL
+                 scheduled_at = :scheduled, claimed_at = NULL, lease_token = NULL
                  WHERE id = :id',
                 [
                     'pending' => 'pending',
                     'retries' => $retriesLeft,
-                    'error' => mb_substr($error, 0, 1000),
+                    'error' => $truncatedError,
                     'scheduled' => time() + $backoff,
                     'id' => $jobId,
                 ],
@@ -203,8 +232,13 @@ final readonly class JobQueue
         // Final failure
         $this->db->execute(
             'UPDATE jobs SET status = :failed, error = :error, completed_at = :now WHERE id = :id',
-            ['failed' => 'failed', 'error' => mb_substr($error, 0, 1000), 'now' => time(), 'id' => $jobId],
+            ['failed' => 'failed', 'error' => $truncatedError, 'now' => time(), 'id' => $jobId],
         );
+
+        // Вызываем колбэк для cleanup ресурсов (например, удаление install_candidates)
+        if ($this->onFinalFail !== null && $job !== null) {
+            ($this->onFinalFail)($job);
+        }
 
         return false;
     }

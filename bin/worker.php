@@ -69,10 +69,10 @@ while (!$shutdown) {
             default => throw new \RuntimeException("Unknown job type: {$job['type']}"),
         };
 
-        $queue->complete((int) $job['id']);
+        $queue->complete((int) $job['id'], (string) $job['lease_token']);
         fwrite(STDOUT, "Job #{$job['id']} completed\n");
     } catch (\Throwable $e) {
-        $retried = $queue->fail((int) $job['id'], $e->getMessage());
+        $retried = $queue->fail((int) $job['id'], (string) $job['lease_token'], $e->getMessage());
         if ($retried) {
             fwrite(STDERR, "Job #{$job['id']} failed, will retry: {$e->getMessage()}\n");
         } else {

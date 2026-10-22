@@ -75,6 +75,21 @@ final readonly class InstallationService
 
         // Всё в одной транзакции: резервирование поколения + кандидат + задача
         $this->db->transaction(function () use ($shop, $insalesId, $candidateId, $encryptedPassword) {
+            // Если есть активное поколение — новый install не нужен.
+            // Повторная установка возможна только после uninstall.
+            $activeGen = $this->db->fetch(
+                'SELECT 1 FROM installation_generations
+                 WHERE store_id = :store_id AND status = :active
+                 LIMIT 1',
+                ['store_id' => $insalesId, 'active' => 'active'],
+            );
+            if ($activeGen !== null) {
+                throw new \RuntimeException(
+                    "Store {$insalesId} already has an active installation. "
+                    . 'Uninstall first before reinstalling.'
+                );
+            }
+
             // Лимит незавершённых кандидатов
             $pendingCount = (int) ($this->db->fetch(
                 'SELECT COUNT(*) as cnt FROM install_candidates WHERE store_id = :store_id',
@@ -184,9 +199,9 @@ final readonly class InstallationService
                 return;
             }
 
-            // Activation: atomic update within transaction
-            $this->db->transaction(function () use ($candidateId, $candidate, $storeId, $shop, $password, $account) {
-                // Re-check that candidate still exists
+            // Activation: вся проверка актуальности — внутри write transaction
+            $this->db->transaction(function () use ($candidateId, $storeId, $shop, $password, $account) {
+                // Перечитываем свежие данные внутри транзакции
                 $current = $this->db->fetch(
                     'SELECT c.id, c.candidate_version, ig.status as gen_status, ig.generation as gen_generation
                      FROM install_candidates c
@@ -200,23 +215,38 @@ final readonly class InstallationService
                     return; // Already removed
                 }
 
-                $myVersion = (int) $candidate['candidate_version'];
+                // Проверяем статус поколения: если cancelled или expired — не активируем
+                $genStatus = (string) ($current['gen_status'] ?? '');
+                if ($genStatus === 'cancelled' || $genStatus === 'expired') {
+                    $this->cleanupCandidate($candidateId, $storeId);
+                    return;
+                }
 
-                // Проверяем, что наш candidate — актуальный (максимальная версия)
+                $myVersion = (int) $current['candidate_version'];
+
+                // Сверяемся с MAX(generation), а не MAX(candidate_version):
+                // generation монотонен и не сбрасывается при удалении кандидатов.
+                $maxGen = (int) ($this->db->fetch(
+                    'SELECT COALESCE(MAX(generation), 0) as g
+                     FROM installation_generations
+                     WHERE store_id = :store_id AND status = :active',
+                    ['store_id' => $storeId, 'active' => 'active'],
+                )['g'] ?? 0);
+
+                // Если уже есть активное поколение с большим номером — наш кандидат устарел
+                $currentGen = (int) ($current['gen_generation'] ?? 0);
+                if ($maxGen > $currentGen) {
+                    $this->cleanupCandidate($candidateId, $storeId);
+                    return;
+                }
+
+                // Проверяем candidate_version как fallback для обратной совместимости
                 $maxVersion = (int) ($this->db->fetch(
                     'SELECT MAX(candidate_version) as v FROM install_candidates WHERE store_id = :store_id',
                     ['store_id' => $storeId],
                 )['v'] ?? 0);
 
                 if ($myVersion < $maxVersion) {
-                    // Есть более новый кандидат — наш устарел
-                    $this->cleanupCandidate($candidateId, $storeId);
-                    return;
-                }
-
-                // Проверяем статус поколения: если cancelled или expired — не активируем
-                $genStatus = (string) ($candidate['gen_status'] ?? '');
-                if ($genStatus === 'cancelled' || $genStatus === 'expired') {
                     $this->cleanupCandidate($candidateId, $storeId);
                     return;
                 }
@@ -330,8 +360,11 @@ final readonly class InstallationService
 
     /**
      * Clean up a candidate and its generation link.
+     *
+     * @internal Используется JobQueue::onFinalFail для очистки при исчерпании retries.
+     *           Не предназначен для внешнего вызова — меняет состояние generations.
      */
-    private function cleanupCandidate(string $candidateId, string $storeId): void
+    public function cleanupCandidate(string $candidateId, string $storeId): void
     {
         // Cancel abandoned generations
         $this->db->execute(

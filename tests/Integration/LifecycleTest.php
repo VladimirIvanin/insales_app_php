@@ -123,7 +123,7 @@ final class LifecycleTest extends TestCase
         $this->assertSame('verify_install', $job['type']);
 
         $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id']);
+        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
 
         // 3. Verify store is installed
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
@@ -256,7 +256,7 @@ final class LifecycleTest extends TestCase
             $job = self::$queue->claim();
             $this->assertNotNull($job);
             $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-            self::$queue->complete((int) $job['id']);
+            self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
         }
 
         // Login to store 1
@@ -447,7 +447,7 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop, $token, $storeId);
         $job = self::$queue->claim();
         $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id']);
+        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $passDec = self::$encryption->decrypt((string) $store['encrypted_password']);
@@ -476,7 +476,7 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop, $token1, $storeId);
         $job = self::$queue->claim();
         $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id']);
+        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertSame(1, (int) $store['generation']);
@@ -489,7 +489,7 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop, $token2, $storeId);
         $job = self::$queue->claim();
         $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id']);
+        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertSame(2, (int) $store['generation']);

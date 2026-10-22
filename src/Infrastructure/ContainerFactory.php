@@ -59,6 +59,23 @@ final readonly class ContainerFactory
         $container->set(JobQueue::class, function (ContainerInterface $c) {
             return new JobQueue(
                 $c->get(Database::class),
+                'default',
+                // При окончательном fail verify_install — чистим candidate и поколение
+                function (array $failedJob) use ($c): void {
+                    $payload = json_decode(
+                        (string) ($failedJob['payload'] ?? '{}'),
+                        true,
+                        512,
+                        \JSON_THROW_ON_ERROR,
+                    );
+                    if (($failedJob['type'] ?? '') === 'verify_install' && isset($payload['candidate_id'], $payload['store_id'])) {
+                        $installationService = $c->get(InstallationService::class);
+                        $installationService->cleanupCandidate(
+                            (string) $payload['candidate_id'],
+                            (string) $payload['store_id'],
+                        );
+                    }
+                },
             );
         });
 
