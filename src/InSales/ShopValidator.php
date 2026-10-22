@@ -17,6 +17,8 @@ final readonly class ShopValidator
     /**
      * Validate shop domain format.
      *
+     * Разрешён только порт 443 (стандартный HTTPS) или без порта.
+     *
      * @return array{host: string, port: int|null}
      */
     public static function parse(string $shop): array
@@ -29,6 +31,11 @@ final readonly class ShopValidator
 
         $host = $m[1];
         $port = isset($m[2]) && $m[2] !== '' ? (int) $m[2] : null;
+
+        // Разрешаем только 443 или без порта
+        if ($port !== null && $port !== 443) {
+            throw new \InvalidArgumentException("Only port 443 is allowed, got {$port}");
+        }
 
         return ['host' => $host, 'port' => $port];
     }
@@ -60,10 +67,6 @@ final readonly class ShopValidator
 
         if (!\in_array($host, $allowedShops, true)) {
             throw new \InvalidArgumentException("Shop '{$shop}' is not in ALLOWED_SHOPS");
-        }
-
-        if ($allowHttp && !self::isLoopback($host)) {
-            throw new \InvalidArgumentException("Plain HTTP is only allowed for loopback test simulator");
         }
 
         // Reconstruct canonical form for comparison

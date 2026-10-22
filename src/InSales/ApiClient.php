@@ -26,7 +26,7 @@ use Psr\Log\LoggerInterface;
  * - Retry for safe (GET) requests on transient failures
  * - Logging without secrets
  */
-final readonly class InSalesClient
+final readonly class ApiClient
 {
     private const MAX_RESPONSE_BYTES = 2_000_000;
     private const REQUEST_TIMEOUT = 10.0;
@@ -37,16 +37,6 @@ final readonly class InSalesClient
 
     private ClientInterface $httpClient;
     private LoggerInterface $logger;
-
-    /** @var array<int, bool> SSRF blocklist for resolved IPs (RFC 1918, loopback, etc.) */
-    private static array $privateRanges = [
-        0x00000000 => 0x00FFFFFF,   // 0.0.0.0/8
-        0x0A000000 => 0x0AFFFFFF,   // 10.0.0.0/8
-        0x7F000000 => 0x7FFFFFFF,   // 127.0.0.0/8
-        0xA9FE0000 => 0xA9FEFFFF,   // 169.254.0.0/16
-        0xAC100000 => 0xAC1FFFFF,   // 172.16.0.0/12
-        0xC0A80000 => 0xC0A8FFFF,   // 192.168.0.0/16
-    ];
 
     public function __construct(
         private string $appId,
@@ -152,7 +142,6 @@ final readonly class InSalesClient
      */
     private function request(string $method, string $path, ?array $body = null): array
     {
-        $this->validateShop();
         $this->verifyDestination();
 
         $url = $this->buildUrl($path);
@@ -285,72 +274,96 @@ final readonly class InSalesClient
     }
 
     /**
-     * Parse shop and verify it's not a private/loopback address (SSRF protection).
-     */
-    private function validateShop(): void
-    {
-        $parsed = ShopValidator::parse($this->shop);
-        $host = $parsed['host'];
-
-        // Loopback is only allowed when explicitly enabled (test mode)
-        if (ShopValidator::isLoopback($host) && !$this->allowHttp) {
-            throw new ApiException(0, 'SSRF: loopback address not allowed');
-        }
-
-        // Resolve and check private ranges
-        // Note: This is a best-effort check; the real protection is disabling redirects and limiting timeouts
-        if (!ShopValidator::isLoopback($host) && $this->isPrivateIp($host)) {
-            throw new ApiException(0, 'SSRF: private IP address not allowed');
-        }
-    }
-
-    /**
-     * Validate case-insensitive hostname is not resolved as private IP.
-     * We check the host string itself for IP literals.
-     */
-    private function isPrivateIp(string $host): bool
-    {
-        // Check if it's an IP literal
-        if (filter_var($host, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4)) {
-            $ipLong = ip2long($host);
-            if ($ipLong === false) {
-                return false;
-            }
-            $ipLong = (int) $ipLong;
-            foreach (self::$privateRanges as $start => $end) {
-                if ($ipLong >= $start && $ipLong <= $end) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Verify the destination is not a private/reserved hostname.
+     * Verify the destination hostname resolves to a public IP.
+     *
+     * - Loopback разрешён только с флагом allowHttp
+     * - Приватные/метаданные адреса блокируются
+     * - DNS резолв перед соединением: отбрасываем частные и loopback A/AAAA записи
+     *
+     * @throws ApiException
      */
     private function verifyDestination(): void
     {
         $parsed = ShopValidator::parse($this->shop);
         $host = $parsed['host'];
 
-        // Block known metadata/private hosts
+        // Allow loopback only when explicitly enabled (test mode)
+        if (ShopValidator::isLoopback($host)) {
+            if (!$this->allowHttp) {
+                throw new ApiException(0, 'SSRF: loopback address not allowed');
+            }
+            return;
+        }
+
+        // Block known metadata hosts by name
         $blocked = [
             '169.254.169.254', // AWS/GCP/Azure metadata
             'metadata.google.internal',
             '100.100.100.200', // Alibaba
+            'metadata.google.internal',
         ];
 
         if (\in_array(mb_strtolower($host), $blocked, true)) {
             throw new ApiException(0, 'SSRF: blocked hostname');
         }
+
+        // DNS resolve: check for private/loopback IPs
+        $ips = @dns_get_record($host, \DNS_A | \DNS_AAAA);
+        if ($ips === false || $ips === []) {
+            // DNS failure — let the connection fail naturally
+            $this->logger->warning('DNS resolution failed for host', ['host' => $host]);
+            return;
+        }
+
+        foreach ($ips as $record) {
+            $ip = $record['ip'] ?? $record['ipv6'] ?? null;
+            if ($ip === null) {
+                continue;
+            }
+
+            if (self::isPrivate($ip)) {
+                throw new ApiException(
+                    0,
+                    "SSRF: host {$host} resolves to private IP {$ip}",
+                );
+            }
+        }
+    }
+
+    /**
+     * Check if an IP address is private or loopback.
+     */
+    private static function isPrivate(string $ip): bool
+    {
+        // IPv4
+        if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4)) {
+            if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE)) {
+                return false;
+            }
+            return true;
+        }
+
+        // IPv6 loopback (::1)
+        if ($ip === '::1') {
+            return true;
+        }
+
+        // IPv6 private (fc00::/7)
+        if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV6)) {
+            $bin = inet_pton($ip);
+            if ($bin !== false && (\ord($bin[0]) & 0xfe) === 0xfc) {
+                return true;
+            }
+            return false;
+        }
+
+        return false;
     }
 
     private function buildUrl(string $path): string
     {
         $parsed = ShopValidator::parse($this->shop);
-        $scheme = $this->allowHttp ? 'http' : 'https';
+        $scheme = ($this->allowHttp && ShopValidator::isLoopback($parsed['host'])) ? 'http' : 'https';
         $host = $parsed['host'];
         $portPart = $parsed['port'] !== null ? ":{$parsed['port']}" : '';
 

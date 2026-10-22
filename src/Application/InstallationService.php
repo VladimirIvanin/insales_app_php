@@ -10,6 +10,7 @@ use InSales\ShopValidator;
 use Infrastructure\Database;
 use Infrastructure\Encryption;
 use Infrastructure\JobQueue;
+use Psr\Log\NullLogger;
 
 /**
  * Service handling the installation lifecycle:
@@ -105,11 +106,12 @@ final readonly class InstallationService
         $password = $this->encryption->decrypt($candidate['encrypted_password']);
 
         try {
-            $client = new InSalesClient(
+            $client = new ApiClient(
                 appId: $this->appId,
                 shop: $shop,
                 password: $password,
                 allowHttp: $this->allowHttp,
+                logger: new NullLogger(),
             );
 
             $account = $client->getAccount();
@@ -149,7 +151,7 @@ final readonly class InstallationService
                          shop = excluded.shop,
                          encrypted_password = excluded.encrypted_password,
                          title = excluded.title,
-                         generation = excluded.generation + 1,
+                         generation = excluded.generation,
                          installed_at = excluded.installed_at',
                     [
                         'store_id' => $storeId,

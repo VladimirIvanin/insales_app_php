@@ -7,11 +7,9 @@ namespace InSales;
 /**
  * InSales protocol formulas.
  *
- * Ported from the verified protocol described in LiquidHub docs and
- * cross-validated with Python demo.
+ * Ported from the verified protocol described in LiquidHub docs.
  *
  * @see https://github.com/insales/insales_app (rev 78593a4)
- * @see https://github.com/VladimirIvanin/insales_app_python (rev c152f4f)
  */
 final readonly class Protocol
 {

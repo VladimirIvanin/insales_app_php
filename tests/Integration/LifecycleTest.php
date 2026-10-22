@@ -84,6 +84,7 @@ final class LifecycleTest extends TestCase
 
         $this->loginService = new LoginService(
             self::$db,
+            self::$encryption,
             $this->appId,
             'http://127.0.0.1:18765',
         );
@@ -127,8 +128,7 @@ final class LifecycleTest extends TestCase
         $this->assertSame('Test Store', $store['title']);
 
         // 4. Login flow
-        $browserId = 'test-browser';
-        $loginResult = $this->loginService->initiateLogin($storeId, $shop, $browserId);
+        $loginResult = $this->loginService->initiateLogin($storeId, $shop);
 
         $this->assertNotEmpty($loginResult['nonce']);
         $this->assertNotEmpty($loginResult['sessionId']);
@@ -206,7 +206,7 @@ final class LifecycleTest extends TestCase
         }
 
         // Login to store 1
-        $login1 = $this->loginService->initiateLogin($storeId1, $shop1, 'browser-1');
+        $login1 = $this->loginService->initiateLogin($storeId1, $shop1);
         $store1 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId1]);
         $passDec1 = self::$encryption->decrypt($store1['encrypted_password']);
         $expectedT3_1 = Protocol::token3($login1['nonce'], 'admin1@test.com', 'Admin1', '1', 'true', $passDec1);
@@ -216,7 +216,7 @@ final class LifecycleTest extends TestCase
         ]);
 
         // Login to store 2
-        $login2 = $this->loginService->initiateLogin($storeId2, $shop2, 'browser-2');
+        $login2 = $this->loginService->initiateLogin($storeId2, $shop2);
         $store2 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId2]);
         $passDec2 = self::$encryption->decrypt($store2['encrypted_password']);
         $expectedT3_2 = Protocol::token3($login2['nonce'], 'admin2@test.com', 'Admin2', '2', 'true', $passDec2);
@@ -258,10 +258,10 @@ final class LifecycleTest extends TestCase
             ['id' => $storeId, 'shop' => $shop, 'pass' => $encPass, 'title' => 'Store', 'now' => time()],
         );
 
-        $loginResult = $this->loginService->initiateLogin($storeId, $shop, 'browser');
+        $loginResult = $this->loginService->initiateLogin($storeId, $shop);
 
         $this->expectException(\Application\LoginException::class);
-        $this->expectExceptionMessage('Invalid token3');
+        $this->expectExceptionMessage('Invalid token3 signature');
 
         $this->loginService->handleAutologin($loginResult['sessionId'], [
             'token3' => str_repeat('a', 32), // wrong signature
@@ -287,7 +287,7 @@ final class LifecycleTest extends TestCase
             ['id' => $storeId, 'shop' => $shop, 'pass' => $encPass, 'title' => 'Store', 'now' => time()],
         );
 
-        $loginResult = $this->loginService->initiateLogin($storeId, $shop, 'browser');
+        $loginResult = $this->loginService->initiateLogin($storeId, $shop);
 
         // Manually expire the nonce
         self::$db->execute(
@@ -328,7 +328,7 @@ final class LifecycleTest extends TestCase
             ['id' => $storeId, 'shop' => $shop, 'pass' => $encPass, 'title' => 'Store', 'now' => time()],
         );
 
-        $loginResult = $this->loginService->initiateLogin($storeId, $shop, 'browser');
+        $loginResult = $this->loginService->initiateLogin($storeId, $shop);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $storePass = self::$encryption->decrypt($store['encrypted_password']);

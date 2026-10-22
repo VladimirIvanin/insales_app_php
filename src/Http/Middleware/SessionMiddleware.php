@@ -14,7 +14,7 @@ use Psr\Http\Server\RequestHandlerInterface;
  * Middleware that validates the authentication session cookie.
  *
  * On success, sets 'store' and 'session' attributes on the request.
- * On failure, the request proceeds without attributes (controllers handle auth).
+ * On failure, returns 401.
  */
 final readonly class SessionMiddleware implements MiddlewareInterface
 {
@@ -31,22 +31,35 @@ final readonly class SessionMiddleware implements MiddlewareInterface
         $cookies = $request->getCookieParams();
         $authToken = $cookies[self::COOKIE_NAME] ?? '';
 
-        if ($authToken !== '' && preg_match('/^[a-f0-9]{64}$/', $authToken)) {
-            $session = $this->loginService->validateSession($authToken);
-            if ($session !== null) {
-                $request = $request->withAttribute('session', $session)
-                    ->withAttribute('store', $session);
-            }
+        if ($authToken === '' || !preg_match('/^[a-f0-9]{64}$/', $authToken)) {
+            return $this->unauthorized($request);
         }
+
+        $session = $this->loginService->validateSession($authToken);
+        if ($session === null) {
+            return $this->unauthorized($request);
+        }
+
+        $request = $request->withAttribute('session', $session)
+            ->withAttribute('store', $session);
 
         $response = $handler->handle($request);
 
         // Renew cookie on active session
-        if ($authToken !== '' && $request->getAttribute('session') !== null) {
-            $response = $this->setSessionCookie($response, $authToken);
-        }
+        $response = $this->setSessionCookie($response, $authToken);
 
         return $response;
+    }
+
+    /**
+     * Return 401 Unauthorized response.
+     */
+    private function unauthorized(ServerRequestInterface $request): ResponseInterface
+    {
+        $response = new \Slim\Psr7\Response();
+        $response->getBody()->write('Unauthorized');
+        return $response->withStatus(401)
+            ->withHeader('Content-Type', 'text/plain; charset=utf-8');
     }
 
     /**

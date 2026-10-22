@@ -2,7 +2,7 @@
 
 Заготовка устанавливаемого партнёрского приложения InSales на PHP 8.4+.
 
-**Архитектура:** Slim 4 + Guzzle + PDO/SQLite + PHP-DI + Twig.
+**Архитектура:** Slim 4 + Guzzle + PDO/SQLite + PHP-DI.
 **Протокол:** классический install / autologin / uninstall.
 
 > **Статус:** заготовка для разработки. Не является production-ready решением без
@@ -52,7 +52,7 @@ composer install
 php bin/worker.php &
 
 # Запуск встроенного сервера:
-php -S 127.0.0.1:8765 -t public/
+php -S 127.0.0.1:8765 -t public public/index.php
 ```
 
 ### Проверка здоровья

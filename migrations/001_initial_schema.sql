@@ -14,14 +14,14 @@ CREATE TABLE IF NOT EXISTS stores (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_stores_shop ON stores(shop);
 
 -- Install candidates (awaiting verification)
+-- Магазина в момент /install ещё нет, поэтому FOREIGN KEY не ставится.
+-- Связь появляется только после сверки account.id.
 CREATE TABLE IF NOT EXISTS install_candidates (
     id TEXT PRIMARY KEY,                 -- random candidate ID
     store_id TEXT NOT NULL,              -- claimed insales_id
     shop TEXT NOT NULL,                  -- normalized shop domain
     encrypted_password TEXT NOT NULL,    -- encrypted password for verification
-    created_at INTEGER NOT NULL,         -- unix timestamp
-    -- Each store can have at most one pending candidate
-    FOREIGN KEY (store_id) REFERENCES stores(store_id) ON DELETE SET NULL
+    created_at INTEGER NOT NULL          -- unix timestamp
 );
 
 CREATE INDEX IF NOT EXISTS idx_install_candidates_store ON install_candidates(store_id);
@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS pending_logins (
     session_id TEXT PRIMARY KEY,         -- server-side session ID for the challenge
     store_id TEXT NOT NULL,              -- store ID
     nonce TEXT NOT NULL,                 -- random nonce sent to InSales
-    browser_id TEXT NOT NULL DEFAULT '', -- browser fingerprint to prevent cross-browser reuse
     expires_at INTEGER NOT NULL,        -- TTL unix timestamp
     created_at INTEGER NOT NULL,
     FOREIGN KEY (store_id) REFERENCES stores(store_id) ON DELETE CASCADE

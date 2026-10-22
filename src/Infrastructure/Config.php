@@ -61,25 +61,4 @@ final readonly class Config
             explode(',', $value),
         );
     }
-
-    /**
-     * Get optional encryption key, generate if not set (dev mode only).
-     */
-    public function getEncryptionKey(): string
-    {
-        $key = $this->getString('APP_ENCRYPTION_KEY', '');
-
-        if ($key === '') {
-            $env = $this->getString('APP_ENV', 'development');
-            if ($env !== 'production') {
-                // Generate deterministic key for dev/test
-                return bin2hex(
-                    sodium_crypto_secretbox_keygen()
-                );
-            }
-            throw new \RuntimeException('APP_ENCRYPTION_KEY is required in production');
-        }
-
-        return $key;
-    }
 }

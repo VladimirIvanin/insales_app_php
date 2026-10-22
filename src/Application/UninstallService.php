@@ -33,7 +33,10 @@ final readonly class UninstallService
     /**
      * Handle uninstall callback from InSales.
      *
-     * @return bool True if uninstall was processed, false if store not found
+     * Всегда чистит install_candidates и jobs для store_id/shop,
+     * даже если строки stores ещё нет (неактивированная установка).
+     *
+     * @return bool True if uninstall was processed, false if store not found and no candidates
      * @throws \InvalidArgumentException
      */
     public function handleUninstall(string $shop, string $token, string $insalesId): bool
@@ -45,45 +48,60 @@ final readonly class UninstallService
             ['store_id' => $insalesId, 'shop' => $shop],
         );
 
+        $processed = true;
+
         if ($store === null) {
-            // Already uninstalled — idempotent response
-            return false;
+            $processed = false;
+        } else {
+            $password = $this->encryption->decrypt($store['encrypted_password']);
+
+            // Compare token with store password (constant-time)
+            if (!hash_equals($password, $token)) {
+                throw new \InvalidArgumentException('Invalid uninstall token');
+            }
         }
 
-        $password = $this->encryption->decrypt($store['encrypted_password']);
+        // Всегда чистим кандидатов и jobs для этого магазина,
+        // даже если stores ещё нет (неактивированная установка).
+        $this->db->transaction(function () use ($insalesId, $shop, $store) {
+            if ($store !== null) {
+                // Invalidate sessions
+                $this->db->execute(
+                    'DELETE FROM sessions WHERE store_id = :store_id',
+                    ['store_id' => $insalesId],
+                );
 
-        // Compare token with store password (constant-time)
-        if (!hash_equals($password, $token)) {
-            throw new \InvalidArgumentException('Invalid uninstall token');
-        }
+                // Remove pending challenges
+                $this->db->execute(
+                    'DELETE FROM pending_logins WHERE store_id = :store_id',
+                    ['store_id' => $insalesId],
+                );
 
-        // Atomically remove everything
-        $this->db->transaction(function () use ($insalesId) {
-            // Invalidate sessions
+                // Remove store credentials
+                $this->db->execute(
+                    'DELETE FROM stores WHERE store_id = :store_id',
+                    ['store_id' => $insalesId],
+                );
+            }
+
+            // Remove install candidates for this store/shop
             $this->db->execute(
-                'DELETE FROM sessions WHERE store_id = :store_id',
-                ['store_id' => $insalesId],
+                'DELETE FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
+                ['store_id' => $insalesId, 'shop' => $shop],
             );
 
-            // Remove pending challenges
+            // Fail any pending jobs for this store
             $this->db->execute(
-                'DELETE FROM pending_logins WHERE store_id = :store_id',
-                ['store_id' => $insalesId],
-            );
-
-            // Remove install candidates for this store
-            $this->db->execute(
-                'DELETE FROM install_candidates WHERE store_id = :store_id',
-                ['store_id' => $insalesId],
-            );
-
-            // Remove store credentials
-            $this->db->execute(
-                'DELETE FROM stores WHERE store_id = :store_id',
-                ['store_id' => $insalesId],
+                "UPDATE jobs SET status = 'failed', error = :error, completed_at = :now
+                 WHERE store_id = :store_id AND status = 'pending'",
+                [
+                    'store_id' => $insalesId,
+                    'error' => 'Uninstalled',
+                    'now' => time(),
+                ],
             );
         });
 
-        return true;
+        return $processed;
     }
 }

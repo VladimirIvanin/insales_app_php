@@ -3,6 +3,8 @@ parameters:
     paths:
         - src/
         - tests/
+        - public/index.php
+        - bin/worker.php
     strictRules:
         allRules: true
     checkMissingIterableValueType: true

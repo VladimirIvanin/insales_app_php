@@ -80,35 +80,38 @@ final readonly class JobQueue
     /**
      * Claim the next pending job.
      *
+     * Атомарно: UPDATE … WHERE … RETURNING с учётом scheduled_at.
+     * Зависшие running-задачи сбрасываются в pending на старте (в конструкторе).
+     *
      * @return array|null Job data or null if none available
      */
     public function claim(): ?array
     {
-        // Find next pending job
         $job = $this->db->fetch(
-            'SELECT * FROM jobs
-             WHERE queue = :queue AND status = :pending
-             ORDER BY created_at ASC LIMIT 1',
-            ['queue' => $this->queueName, 'pending' => 'pending'],
+            'UPDATE jobs
+             SET status = :running, claimed_at = :now
+             WHERE id = (
+                 SELECT id FROM jobs
+                 WHERE queue = :queue
+                   AND status = :pending
+                   AND scheduled_at <= :now_sched
+                 ORDER BY priority DESC, created_at ASC
+                 LIMIT 1
+             )
+             RETURNING *',
+            [
+                'running' => 'running',
+                'now' => time(),
+                'queue' => $this->queueName,
+                'pending' => 'pending',
+                'now_sched' => time(),
+            ],
         );
 
         if ($job === null) {
             return null;
         }
 
-        // Mark as running
-        $this->db->execute(
-            'UPDATE jobs SET status = :running, claimed_at = :now WHERE id = :id AND status = :pending',
-            [
-                'running' => 'running',
-                'now' => time(),
-                'id' => $job['id'],
-                'pending' => 'pending',
-            ],
-        );
-
-        $job['status'] = 'running';
-        $job['claimed_at'] = (string) time();
         $job['payload'] = json_decode($job['payload'], true, 512, \JSON_THROW_ON_ERROR);
 
         return $job;

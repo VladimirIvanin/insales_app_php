@@ -8,8 +8,6 @@ updates:
       time: "07:00"
       timezone: "Europe/Moscow"
     open-pull-requests-limit: 10
-    assignees:
-      - "VladimirIvanin"
     labels:
       - "dependencies"
       - "php"

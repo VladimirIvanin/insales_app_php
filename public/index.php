@@ -1,7 +1,5 @@
 <?php
 
-declare(strict_types=1);
-
 /**
  * InSales Partner Application — HTTP entry point.
  *
@@ -17,13 +15,8 @@ if (PHP_VERSION_ID < 80400) {
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use Http\Controllers\DashboardController;
-use Http\Controllers\InstallController;
-use Http\Controllers\LoginController;
-use Http\Controllers\UninstallController;
-use Http\Middleware\SessionMiddleware;
+use Infrastructure\ContainerFactory;
 use Infrastructure\Config;
-use Psr\Container\ContainerInterface;
 use Slim\Factory\AppFactory;
 use Slim\Psr7\Response;
 use Slim\Routing\RouteCollectorProxy;
@@ -31,105 +24,10 @@ use Slim\Routing\RouteCollectorProxy;
 // Load environment
 $rootDir = dirname(__DIR__);
 $config = new Config($rootDir);
-
-$appId = $config->getString('INSALES_APP_ID');
-$appSecret = $config->getString('INSALES_APP_SECRET');
-$baseUrl = $config->getString('APP_BASE_URL');
-$allowedShops = $config->getAllowedShops();
-$encryptionKey = $config->getString('APP_ENCRYPTION_KEY');
-$dbPath = $config->getString('APP_DB_PATH', $rootDir . '/runtime/app.sqlite3');
 $appEnv = $config->getString('APP_ENV', 'development');
-$allowHttp = $appEnv === 'test' || $appEnv === 'development';
 
-// Build DI container
-$container = new DI\Container();
-
-// Infrastructure
-$container->set(Infrastructure\Database::class, function () use ($dbPath) {
-    $db = new Infrastructure\Database($dbPath);
-
-    // Apply migrations
-    $migrations = require $rootDir . '/migrations/migrate.php';
-    $db->migrate($migrations);
-
-    return $db;
-});
-
-$container->set(Infrastructure\Encryption::class, function () use ($encryptionKey) {
-    return new Infrastructure\Encryption($encryptionKey);
-});
-
-$container->set(Infrastructure\JobQueue::class, function (ContainerInterface $c) {
-    return new Infrastructure\JobQueue(
-        $c->get(Infrastructure\Database::class),
-    );
-});
-
-// Application services
-$container->set(Application\InstallationService::class, function (ContainerInterface $c) use ($appSecret, $appId, $allowedShops, $allowHttp) {
-    return new Application\InstallationService(
-        $c->get(Infrastructure\Database::class),
-        $c->get(Infrastructure\Encryption::class),
-        $c->get(Infrastructure\JobQueue::class),
-        $appSecret,
-        $appId,
-        $allowedShops,
-        $allowHttp,
-    );
-});
-
-$container->set(Application\LoginService::class, function (ContainerInterface $c) use ($appId, $baseUrl) {
-    return new Application\LoginService(
-        $c->get(Infrastructure\Database::class),
-        $appId,
-        $baseUrl,
-    );
-});
-
-$container->set(Application\UninstallService::class, function (ContainerInterface $c) use ($appSecret, $allowedShops, $allowHttp) {
-    return new Application\UninstallService(
-        $c->get(Infrastructure\Database::class),
-        $c->get(Infrastructure\Encryption::class),
-        $appSecret,
-        $allowedShops,
-        $allowHttp,
-    );
-});
-
-// HTTP layer
-$container->set(SessionMiddleware::class, function (ContainerInterface $c) use ($baseUrl) {
-    return new SessionMiddleware(
-        $c->get(Application\LoginService::class),
-        $baseUrl,
-    );
-});
-
-$container->set(InstallController::class, function (ContainerInterface $c) {
-    return new InstallController(
-        $c->get(Application\InstallationService::class),
-    );
-});
-
-$container->set(LoginController::class, function (ContainerInterface $c) use ($baseUrl) {
-    return new LoginController(
-        $c->get(Application\LoginService::class),
-        $c->get(SessionMiddleware::class),
-        $baseUrl,
-    );
-});
-
-$container->set(UninstallController::class, function (ContainerInterface $c) {
-    return new UninstallController(
-        $c->get(Application\UninstallService::class),
-    );
-});
-
-$container->set(DashboardController::class, function (ContainerInterface $c) use ($appId, $allowHttp) {
-    return new DashboardController(
-        $appId,
-        $allowHttp,
-    );
-});
+// Build DI container via shared factory
+$container = ContainerFactory::create($rootDir);
 
 // Create Slim app
 AppFactory::setContainer($container);
@@ -146,14 +44,13 @@ $errorMiddleware = $app->addErrorMiddleware(
     true,
 );
 
-// Custom error handler
 $errorMiddleware->setDefaultErrorHandler(function (
     Psr\Http\Message\ServerRequestInterface $request,
     \Throwable $exception,
     bool $displayErrorDetails,
     bool $logErrors,
     bool $logErrorDetails,
-) use ($app) {
+) {
     $response = new Response();
     $response->getBody()->write('Internal server error');
     return $response->withStatus(500)
@@ -161,24 +58,24 @@ $errorMiddleware->setDefaultErrorHandler(function (
 });
 
 // Routes
-$app->get('/health', [DashboardController::class, 'health'])->setName('health');
+$app->get('/health', [\Http\Controllers\DashboardController::class, 'health'])->setName('health');
 
 // Install callback (no session required)
-$app->get('/install', InstallController::class)->setName('install');
+$app->get('/install', \Http\Controllers\InstallController::class)->setName('install');
 
 // Login flow
-$app->get('/login', [LoginController::class, 'login'])->setName('login');
-$app->get('/autologin', [LoginController::class, 'autologin'])->setName('autologin');
-$app->post('/logout', [LoginController::class, 'logout'])->setName('logout');
+$app->get('/login', [\Http\Controllers\LoginController::class, 'login'])->setName('login');
+$app->get('/autologin', [\Http\Controllers\LoginController::class, 'autologin'])->setName('autologin');
+$app->post('/logout', [\Http\Controllers\LoginController::class, 'logout'])->setName('logout');
 
 // Uninstall callback (no session required)
-$app->get('/uninstall', UninstallController::class)->setName('uninstall');
+$app->get('/uninstall', \Http\Controllers\UninstallController::class)->setName('uninstall');
 
 // Protected routes (session middleware)
 $app->group('', function (RouteCollectorProxy $group) {
-    $group->get('/', [DashboardController::class, 'index'])->setName('dashboard');
-    $group->get('/probe', [DashboardController::class, 'probe'])->setName('probe');
-})->add(SessionMiddleware::class);
+    $group->get('/', [\Http\Controllers\DashboardController::class, 'index'])->setName('dashboard');
+    $group->get('/probe', [\Http\Controllers\DashboardController::class, 'probe'])->setName('probe');
+})->add(\Http\Middleware\SessionMiddleware::class);
 
 // Run
 $app->run();

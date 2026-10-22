@@ -38,9 +38,7 @@ final readonly class LoginController
         }
 
         try {
-            $browserId = $request->getCookieParams()['browser_id'] ?? '';
-
-            $result = $this->loginService->initiateLogin($insalesId, $shop, $browserId);
+            $result = $this->loginService->initiateLogin($insalesId, $shop);
 
             // Set the pending session cookie
             $response = $this->sessionMiddleware->setSessionCookie($response, $result['sessionId']);

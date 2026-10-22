@@ -24,43 +24,20 @@ require_once __DIR__ . '/../vendor/autoload.php';
 pcntl_async_signals(true);
 
 use Infrastructure\Config;
-use Infrastructure\Database;
-use Infrastructure\Encryption;
+use Infrastructure\ContainerFactory;
 use Infrastructure\JobQueue;
 use Application\InstallationService;
 
 $rootDir = dirname(__DIR__);
 $config = new Config($rootDir);
-
-$appId = $config->getString('INSALES_APP_ID');
-$appSecret = $config->getString('INSALES_APP_SECRET');
-$allowedShops = $config->getAllowedShops();
-$encryptionKey = $config->getString('APP_ENCRYPTION_KEY', '');
-$dbPath = $config->getString('APP_DB_PATH', $rootDir . '/runtime/app.sqlite3');
-$appEnv = $config->getString('APP_ENV', 'development');
-$allowHttp = $appEnv === 'test' || $appEnv === 'development';
 $pollInterval = (int) ($config->getString('WORKER_POLL_INTERVAL', '2'));
 
-if ($encryptionKey === '') {
-    $encryptionKey = bin2hex(sodium_crypto_secretbox_keygen());
-}
+// Use shared DI container
+$container = ContainerFactory::create($rootDir);
 
-$db = new Database($dbPath);
-$migrations = require $rootDir . '/migrations/migrate.php';
-$db->migrate($migrations);
-
-$encryption = new Encryption($encryptionKey);
-$queue = new JobQueue($db);
-
-$installationService = new InstallationService(
-    $db,
-    $encryption,
-    $queue,
-    $appSecret,
-    $appId,
-    $allowedShops,
-    $allowHttp,
-);
+$db = $container->get(\Infrastructure\Database::class);
+$queue = $container->get(JobQueue::class);
+$installationService = $container->get(InstallationService::class);
 
 // Graceful shutdown
 $shutdown = false;

@@ -7,6 +7,7 @@ namespace Application;
 use InSales\Protocol;
 use InSales\ShopValidator;
 use Infrastructure\Database;
+use Infrastructure\Encryption;
 
 /**
  * Service handling the employee login flow:
@@ -14,12 +15,11 @@ use Infrastructure\Database;
  * 2. Handle autologin: verify token3, create session
  *
  * Security:
- * - Nonce is single-use, bound to store, browser (via cookie), and TTL
+ * - Nonce is single-use, bound to store and TTL
  * - Initial /login parameters do NOT create an authenticated session
  * - token3 verified with hash_equals (constant-time)
  * - Session ID is generated cryptographically (random)
- * - Challenge consumed once; replay prevented
- * - Browser cookie tied to nonce prevents cross-browser reuse
+ * - Challenge consumed in transaction with session creation; replay prevented
  */
 final readonly class LoginService
 {
@@ -28,19 +28,19 @@ final readonly class LoginService
 
     public function __construct(
         private Database $db,
+        private Encryption $encryption,
         private string $appId,
         private string $baseUrl,
     ) {}
 
     /**
-     * Initiate login: generate nonce bound to store + browser.
+     * Initiate login: generate nonce bound to store.
      *
      * @param string $storeId Store numeric ID
      * @param string $shop Normalized shop domain
-     * @param string $browserId Browser identifier (from session cookie or similar)
      * @return array{nonce: string, redirectUrl: string, sessionId: string}
      */
-    public function initiateLogin(string $storeId, string $shop, string $browserId): array
+    public function initiateLogin(string $storeId, string $shop): array
     {
         $store = $this->getStore($storeId, $shop);
 
@@ -54,13 +54,12 @@ final readonly class LoginService
         );
 
         $this->db->execute(
-            'INSERT INTO pending_logins (session_id, store_id, nonce, browser_id, expires_at, created_at)
-             VALUES (:session_id, :store_id, :nonce, :browser_id, :expires_at, :created_at)',
+            'INSERT INTO pending_logins (session_id, store_id, nonce, expires_at, created_at)
+             VALUES (:session_id, :store_id, :nonce, :expires_at, :created_at)',
             [
                 'session_id' => $sessionId,
                 'store_id' => $store['store_id'],
                 'nonce' => $nonce,
-                'browser_id' => $browserId,
                 'expires_at' => time() + self::NONCE_TTL,
                 'created_at' => time(),
             ],
@@ -91,9 +90,9 @@ final readonly class LoginService
      */
     public function handleAutologin(string $sessionId, array $params): array
     {
-        // Atomically consume the challenge
+        // Read the pending challenge (do NOT delete yet)
         $pending = $this->db->fetch(
-            'DELETE FROM pending_logins WHERE session_id = :sid RETURNING *',
+            'SELECT * FROM pending_logins WHERE session_id = :sid',
             ['sid' => $sessionId],
         );
 
@@ -126,27 +125,36 @@ final readonly class LoginService
             throw new LoginException('Invalid token3 signature');
         }
 
-        // Create authenticated session
+        // Atomically consume challenge + create session
         $authToken = bin2hex(random_bytes(32));
 
-        // Clean expired sessions
-        $this->db->execute(
-            'DELETE FROM sessions WHERE expires_at < :now',
-            ['now' => time()],
-        );
+        $this->db->transaction(function () use ($sessionId, $store, $params, $authToken) {
+            // Удаляем nonce
+            $this->db->execute(
+                'DELETE FROM pending_logins WHERE session_id = :sid',
+                ['sid' => $sessionId],
+            );
 
-        $this->db->execute(
-            'INSERT INTO sessions (id, store_id, user_id, generation, expires_at, created_at)
-             VALUES (:id, :store_id, :user_id, :generation, :expires_at, :created_at)',
-            [
-                'id' => $authToken,
-                'store_id' => $store['store_id'],
-                'user_id' => $params['user_id'] ?? '0',
-                'generation' => $store['generation'],
-                'expires_at' => time() + self::SESSION_TTL,
-                'created_at' => time(),
-            ],
-        );
+            // Очищаем expired сессии
+            $this->db->execute(
+                'DELETE FROM sessions WHERE expires_at < :now',
+                ['now' => time()],
+            );
+
+            // Создаём сессию
+            $this->db->execute(
+                'INSERT INTO sessions (id, store_id, user_id, generation, expires_at, created_at)
+                 VALUES (:id, :store_id, :user_id, :generation, :expires_at, :created_at)',
+                [
+                    'id' => $authToken,
+                    'store_id' => $store['store_id'],
+                    'user_id' => $params['user_id'] ?? '0',
+                    'generation' => $store['generation'],
+                    'expires_at' => time() + self::SESSION_TTL,
+                    'created_at' => time(),
+                ],
+            );
+        });
 
         return [
             'authToken' => $authToken,
@@ -192,6 +200,7 @@ final readonly class LoginService
 
     /**
      * Get store by ID and optionally verify shop.
+     * Returns store data with decrypted password.
      */
     private function getStore(string $storeId, ?string $shop = null): array
     {
@@ -210,6 +219,8 @@ final readonly class LoginService
         if ($store === null) {
             throw new LoginException('Store is not installed');
         }
+
+        $store['password'] = $this->encryption->decrypt($store['encrypted_password']);
 
         return $store;
     }

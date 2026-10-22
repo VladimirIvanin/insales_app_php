@@ -22,9 +22,6 @@ final readonly class DashboardController
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $session = $request->getAttribute('session');
-        if ($session === null) {
-            return $this->renderHtml($response, 'Откройте приложение из раздела расширений InSales.', 401);
-        }
 
         $title = htmlspecialchars((string) ($session['title'] ?? 'Store'), ENT_QUOTES, 'UTF-8');
         $shop = htmlspecialchars((string) ($session['shop'] ?? ''), ENT_QUOTES, 'UTF-8');
@@ -103,9 +100,6 @@ HTML;
     public function probe(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $session = $request->getAttribute('session');
-        if ($session === null) {
-            return $this->renderHtml($response, 'Требуется авторизация.', 401);
-        }
 
         $shop = (string) ($session['shop'] ?? '');
         $password = (string) ($session['password'] ?? '');
