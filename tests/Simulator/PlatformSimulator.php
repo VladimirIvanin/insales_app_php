@@ -203,10 +203,10 @@ final class PlatformSimulator
     /**
      * Register a login nonce for redirect.
      */
-    public function addLoginNonce(string $nonce, string $appId): void
+    public function addLoginNonce(string $nonce, string $appId, string $shop = ''): void
     {
         $state = $this->readState();
-        $state['login_nonces'][$nonce] = ['app_id' => $appId, 'timestamp' => time()];
+        $state['login_nonces'][$nonce] = ['app_id' => $appId, 'shop' => $shop, 'timestamp' => time()];
         $this->writeState($state);
     }
 

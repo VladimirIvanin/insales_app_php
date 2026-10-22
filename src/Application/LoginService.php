@@ -70,11 +70,12 @@ final readonly class LoginService
         $host = $this->platformBaseUrl ?? sprintf('https://%s', $shop);
 
         $redirectUrl = sprintf(
-            '%s/admin/applications/%s/login?token=%s&login=%s',
+            '%s/admin/applications/%s/login?token=%s&login=%s&shop=%s',
             $host,
             rawurlencode($this->appId),
             rawurlencode($nonce),
             rawurlencode($this->baseUrl . '/autologin'),
+            rawurlencode($shop),
         );
 
         return [

@@ -107,13 +107,12 @@ final class ShopValidatorTest extends TestCase
         ShopValidator::validate('evil.com', ['demo.myinsales.ru'], false);
     }
 
-    #[TestDox('validate rejects HTTP for non-loopback')]
-    public function testValidateRejectsHttpForNonLoopback(): void
+    #[TestDox('validate allows public HTTPS domain with allowHttp=false')]
+    public function testValidateAllowsPublicHttpsWithAllowHttpFalse(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Plain HTTP is only allowed');
-
-        ShopValidator::validate('demo.myinsales.ru', ['demo.myinsales.ru'], false);
+        // Публичный разрешённый домен — HTTPS (без порта) проходит с allowHttp=false
+        $result = ShopValidator::validate('demo.myinsales.ru', ['demo.myinsales.ru'], false);
+        $this->assertSame('demo.myinsales.ru', $result);
     }
 
     #[TestDox('validate allows HTTP for loopback')]
@@ -121,5 +120,12 @@ final class ShopValidatorTest extends TestCase
     {
         $result = ShopValidator::validate('127.0.0.1', ['127.0.0.1'], true);
         $this->assertSame('127.0.0.1', $result);
+    }
+
+    #[TestDox('validate allows public domain with explicit port 443 even with allowHttp=false')]
+    public function testValidateAllowsPublicDomainWithPort443(): void
+    {
+        $result = ShopValidator::validate('demo.myinsales.ru:443', ['demo.myinsales.ru'], false);
+        $this->assertSame('demo.myinsales.ru:443', $result);
     }
 }

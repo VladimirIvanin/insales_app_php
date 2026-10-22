@@ -167,6 +167,7 @@ if (preg_match('#^/admin/applications/([^/]+)/login$#', $uri, $m) && $method ===
     $appId = $m[1];
     $nonce = $query['token'] ?? '';
     $loginUrl = $query['login'] ?? '';
+    $shop = $query['shop'] ?? '';
 
     if ($nonce === '' || $loginUrl === '') {
         http_response_code(400);
@@ -175,12 +176,16 @@ if (preg_match('#^/admin/applications/([^/]+)/login$#', $uri, $m) && $method ===
         exit;
     }
 
-    $state['login_nonces'][$nonce] = ['app_id' => $appId, 'timestamp' => time()];
-    sim_write_state($stateFile, $state);
-
+    // Определяем password для подписи по shop из query
+    // Если shop не указан — fallback к старому поведению (один магазин)
     $password = '';
-    foreach (($state['stores'] ?? []) as $shop => $info) {
-        $password = $info['password'];
+    if ($shop !== '') {
+        $password = $state['stores'][$shop]['password'] ?? '';
+    } else {
+        // Legacy: берём последний магазин (только для одного магазина)
+        foreach (($state['stores'] ?? []) as $s => $info) {
+            $password = $info['password'];
+        }
     }
 
     if ($password === '') {

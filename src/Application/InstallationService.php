@@ -71,14 +71,22 @@ final readonly class InstallationService
         $candidateId = bin2hex(random_bytes(32));
         $encryptedPassword = $this->encryption->encrypt($password);
 
+        // candidate_version: монотонно возрастающий номер для store_id
+        $currentMaxVersion = (int) ($this->db->fetch(
+            'SELECT MAX(candidate_version) as v FROM install_candidates WHERE store_id = :store_id',
+            ['store_id' => $insalesId],
+        )['v'] ?? 0);
+        $candidateVersion = $currentMaxVersion + 1;
+
         $this->db->execute(
-            'INSERT INTO install_candidates (id, store_id, shop, encrypted_password, created_at)
-             VALUES (:id, :store_id, :shop, :encrypted_password, :created_at)',
+            'INSERT INTO install_candidates (id, store_id, shop, encrypted_password, candidate_version, created_at)
+             VALUES (:id, :store_id, :shop, :encrypted_password, :candidate_version, :created_at)',
             [
                 'id' => $candidateId,
                 'store_id' => $insalesId,
                 'shop' => $shop,
                 'encrypted_password' => $encryptedPassword,
+                'candidate_version' => $candidateVersion,
                 'created_at' => time(),
             ],
         );
@@ -132,13 +140,32 @@ final readonly class InstallationService
             }
 
             // Activation: atomic update within transaction
-            $this->db->transaction(function () use ($candidateId, $storeId, $shop, $password, $account) {
-                // Re-check that candidate still exists
-                $stillExists = $this->db->fetch(
-                    'SELECT 1 FROM install_candidates WHERE id = :id',
+            $this->db->transaction(function () use ($candidateId, $candidate, $storeId, $shop, $password, $account) {
+                // Re-check that candidate still exists and is the latest version
+                $current = $this->db->fetch(
+                    'SELECT candidate_version FROM install_candidates WHERE id = :id',
                     ['id' => $candidateId],
                 );
-                if ($stillExists === null) {
+                if ($current === null) {
+                    return; // Already removed (e.g., uninstall)
+                }
+
+                $myVersion = (int) $candidate['candidate_version'];
+
+                // Проверяем, что наш candidate — актуальный (максимальная версия для store_id).
+                // Если другой worker уже активировал/создал более нового кандидата —
+                // наш устарел, активацию отменяем.
+                $maxVersion = (int) ($this->db->fetch(
+                    'SELECT MAX(candidate_version) as v FROM install_candidates WHERE store_id = :store_id',
+                    ['store_id' => $storeId],
+                )['v'] ?? 0);
+
+                if ($myVersion < $maxVersion) {
+                    // Есть более новый кандидат — наш устарел, удаляем его
+                    $this->db->execute(
+                        'DELETE FROM install_candidates WHERE id = :id',
+                        ['id' => $candidateId],
+                    );
                     return;
                 }
 

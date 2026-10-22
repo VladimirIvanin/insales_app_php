@@ -96,7 +96,6 @@ final class LifecycleTest extends TestCase
         $this->uninstallService = new UninstallService(
             self::$db,
             self::$encryption,
-            $this->appSecret,
             ['test.myshop.ru', '127.0.0.1'],
             true,
         );

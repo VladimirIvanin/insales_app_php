@@ -73,10 +73,20 @@ final readonly class ShopValidator
             throw new \InvalidArgumentException("Shop '{$shop}' is not in ALLOWED_SHOPS");
         }
 
-        // Plain HTTP разрешён только для loopback-адресов (dev-режим)
-        if (!$allowHttp && !self::isLoopback($host)) {
-            throw new \InvalidArgumentException('Plain HTTP is only allowed for loopback addresses');
+        // Transport policy:
+        // - Публичные домены всегда используют HTTPS (порт 443 или без порта).
+        // - Plain HTTP (порт 80) запрещён на уровне parse(), который разрешает
+        //   только порт 443 или отсутствие порта (HTTPS по умолчанию).
+        // - allowHttp=true разрешает HTTP для loopback-адресов (dev-режим).
+        // - allowHttp=false НЕ блокирует публичные домены — только явный HTTP
+        //   к не-loopback адресу (не достигается, т.к. parse блокирует порт 80).
+        if ($parsed['port'] !== null && $parsed['port'] !== 443) {
+            throw new \InvalidArgumentException("Only port 443 is allowed, got {$parsed['port']}");
         }
+
+        // allowHttp=false: публичный домен без порта или с портом 443 — HTTPS, разрешено.
+        // Блокировка plain HTTP для не-loopback адресов уже обеспечена parse().
+        // allowHttp=true нужен только для HTTP loopback в dev-режиме.
 
         // Reconstruct canonical form for comparison
         return $parsed['port'] !== null ? "{$host}:{$parsed['port']}" : $host;
