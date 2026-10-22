@@ -30,6 +30,7 @@ final readonly class JobQueue
         private Database $db,
         private string $queueName = 'default',
         private ?\Closure $onFinalFail = null,
+        private ?\Psr\Log\LoggerInterface $logger = null,
     ) {
         // Cleanup stale claims on construction
         $this->db->execute(
@@ -170,10 +171,12 @@ final readonly class JobQueue
      *
      * Требует lease_token для предотвращения модификации
      * завершённых или перевыданных задач чужим воркером.
+     *
+     * @throws \RuntimeException если задача не найдена или уже не running
      */
     public function complete(int $jobId, string $leaseToken): void
     {
-        $this->db->execute(
+        $affected = $this->db->execute(
             'UPDATE jobs SET status = :completed, completed_at = :now
              WHERE id = :id AND status = :running AND lease_token = :token',
             [
@@ -184,6 +187,10 @@ final readonly class JobQueue
                 'token' => $leaseToken,
             ],
         );
+
+        if ($affected === 0) {
+            $this->logger?->warning('Job complete affected 0 rows', ['job_id' => $jobId]);
+        }
     }
 
     /**
@@ -217,22 +224,24 @@ final readonly class JobQueue
             $this->db->execute(
                 'UPDATE jobs SET status = :pending, retries_left = :retries, error = :error,
                  scheduled_at = :scheduled, claimed_at = NULL, lease_token = NULL
-                 WHERE id = :id',
+                 WHERE id = :id AND lease_token = :token',
                 [
                     'pending' => 'pending',
                     'retries' => $retriesLeft,
                     'error' => $truncatedError,
                     'scheduled' => time() + $backoff,
                     'id' => $jobId,
+                    'token' => $leaseToken,
                 ],
             );
             return true;
         }
 
-        // Final failure
+        // Final failure — with lease check to prevent overwriting completed jobs
         $this->db->execute(
-            'UPDATE jobs SET status = :failed, error = :error, completed_at = :now WHERE id = :id',
-            ['failed' => 'failed', 'error' => $truncatedError, 'now' => time(), 'id' => $jobId],
+            'UPDATE jobs SET status = :failed, error = :error, completed_at = :now
+             WHERE id = :id AND lease_token = :token',
+            ['failed' => 'failed', 'error' => $truncatedError, 'now' => time(), 'id' => $jobId, 'token' => $leaseToken],
         );
 
         // Вызываем колбэк для cleanup ресурсов (например, удаление install_candidates)

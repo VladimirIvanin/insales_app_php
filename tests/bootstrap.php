@@ -17,8 +17,9 @@ $_ENV['ALLOWED_SHOPS'] = 'test.myshop.ru,127.0.0.1';
 $_ENV['APP_BASE_URL'] = 'http://127.0.0.1:18765';
 $_ENV['APP_ENCRYPTION_KEY'] = '0000000000000000000000000000000000000000000000000000000000000000';
 
-// Clean up any previous test databases
-$dbPath = __DIR__ . '/../runtime/test.sqlite3';
+// Clean up any previous test databases — use /tmp for writable storage
+$dbPath = '/tmp/insales-test-' . getmyuid() . '.sqlite3';
+$_ENV['APP_DB_PATH'] = $dbPath;
 if (file_exists($dbPath)) {
     unlink($dbPath);
 }

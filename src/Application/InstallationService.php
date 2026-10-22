@@ -84,7 +84,7 @@ final readonly class InstallationService
                 ['store_id' => $insalesId, 'active' => 'active'],
             );
             if ($activeGen !== null) {
-                throw new \RuntimeException(
+                throw new \InvalidArgumentException(
                     "Store {$insalesId} already has an active installation. "
                     . 'Uninstall first before reinstalling.'
                 );
@@ -226,11 +226,13 @@ final readonly class InstallationService
 
                 // Сверяемся с MAX(generation), а не MAX(candidate_version):
                 // generation монотонен и не сбрасывается при удалении кандидатов.
+                // Смотрим ВСЕ поколения (не только active), чтобы reserved кандидат
+                // с большим номером тоже блокировал активацию более старого.
                 $maxGen = (int) ($this->db->fetch(
                     'SELECT COALESCE(MAX(generation), 0) as g
                      FROM installation_generations
-                     WHERE store_id = :store_id AND status = :active',
-                    ['store_id' => $storeId, 'active' => 'active'],
+                     WHERE store_id = :store_id',
+                    ['store_id' => $storeId],
                 )['g'] ?? 0);
 
                 // Если уже есть активное поколение с большим номером — наш кандидат устарел
@@ -251,11 +253,7 @@ final readonly class InstallationService
                     return;
                 }
 
-                $generation = (int) ($this->db->fetch(
-                    'SELECT COALESCE(MAX(generation), 0) as g FROM stores WHERE store_id = :store_id',
-                    ['store_id' => $storeId],
-                )['g'] ?? 0);
-
+                $currentGen = (int) ($current['gen_generation'] ?? 0);
                 $encryptedPassword = $this->encryption->encrypt($password);
                 $title = mb_substr((string) ($account['title'] ?? 'Store'), 0, 255);
 
@@ -273,7 +271,7 @@ final readonly class InstallationService
                         'shop' => $shop,
                         'encrypted_password' => $encryptedPassword,
                         'title' => $title,
-                        'generation' => $generation + 1,
+                        'generation' => $currentGen,
                         'installed_at' => time(),
                     ],
                 );

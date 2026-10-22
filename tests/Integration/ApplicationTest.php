@@ -118,11 +118,11 @@ final class ApplicationTest extends TestCase
         $this->assertStringContainsString('/', (string) $response->getHeaderLine('Location'));
     }
 
-    #[TestDox('unknown route returns 500 (default error handler)')]
+    #[TestDox('unknown route returns 404 via error handler')]
     public function testUnknownRoute(): void
     {
         $response = $this->request('GET', '/nonexistent');
-        $this->assertSame(500, $response->getStatusCode());
+        $this->assertSame(404, $response->getStatusCode());
     }
 
     #[TestDox('health endpoint returns ok')]

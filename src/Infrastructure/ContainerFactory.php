@@ -80,7 +80,7 @@ final readonly class ContainerFactory
         });
 
         // Application services
-        $container->set(InstallationService::class, function (ContainerInterface $c) use ($appSecret, $appId, $allowedShops, $allowHttp) {
+        $container->set(InstallationService::class, function (ContainerInterface $c) use ($appSecret, $appId, $allowedShops, $allowHttp, $baseUrl) {
             return new InstallationService(
                 $c->get(Database::class),
                 $c->get(Encryption::class),
@@ -89,6 +89,7 @@ final readonly class ContainerFactory
                 $appId,
                 $allowedShops,
                 $allowHttp,
+                platformBaseUrl: $baseUrl,
             );
         });
 

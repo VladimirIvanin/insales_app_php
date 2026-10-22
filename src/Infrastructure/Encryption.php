@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Infrastructure;
 
 /**
- * Encrypt/decrypt store passwords using libsodium (XChaCha20-Poly1305).
+ * Encrypt/decrypt store passwords using libsodium (XSalsa20-Poly1305).
  *
  * Key must be 32 random bytes, provided as hex-encoded string via environment.
- * Sodium uses a nonce + key for authenticated encryption.
+ * Sodium uses a nonce + key for authenticated encryption (sodium_crypto_secretbox).
  * Each encryption generates a fresh random nonce prepended to the ciphertext.
  * Output is hex-encoded for storage: nonce_hex . ciphertext_hex.
  */

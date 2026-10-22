@@ -463,7 +463,7 @@ final class LifecycleTest extends TestCase
         // (Verified via the account endpoint returning 401)
     }
 
-    #[TestDox('reinstall creates new password generation')]
+    #[TestDox('reinstall creates new password generation after uninstall')]
     public function testReinstallIncrementsGeneration(): void
     {
         $shop = 'test.myshop.ru';
@@ -480,6 +480,11 @@ final class LifecycleTest extends TestCase
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertSame(1, (int) $store['generation']);
+
+        // Uninstall first
+        $passDec1 = self::$encryption->decrypt((string) $store['encrypted_password']);
+        $this->uninstallService->handleUninstall($shop, $passDec1, $storeId);
+        $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
 
         // Reinstall with new token
         $token2 = 'second-install';

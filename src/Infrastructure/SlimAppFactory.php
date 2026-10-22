@@ -63,6 +63,28 @@ final readonly class SlimAppFactory
             bool $logErrorDetails,
         ) {
             $response = new Response();
+
+            // Slim throws HttpNotFoundException for unmatched routes → 404
+            if ($exception instanceof \Slim\Exception\HttpNotFoundException) {
+                $response->getBody()->write('Not Found');
+                return $response->withStatus(404)
+                    ->withHeader('Content-Type', 'text/plain; charset=utf-8');
+            }
+
+            // Slim throws HttpMethodNotAllowedException for wrong method → 405
+            if ($exception instanceof \Slim\Exception\HttpMethodNotAllowedException) {
+                $response->getBody()->write('Method Not Allowed');
+                return $response->withStatus(405)
+                    ->withHeader('Content-Type', 'text/plain; charset=utf-8');
+            }
+
+            // Slim throws HttpSpecialRedirect for internal redirects
+            if ($exception instanceof \Slim\Exception\HttpException) {
+                $response->getBody()->write('Error');
+                return $response->withStatus($exception->getCode())
+                    ->withHeader('Content-Type', 'text/plain; charset=utf-8');
+            }
+
             $response->getBody()->write('Internal server error');
             return $response->withStatus(500)
                 ->withHeader('Content-Type', 'text/plain; charset=utf-8');

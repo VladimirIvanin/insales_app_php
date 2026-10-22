@@ -169,7 +169,8 @@ final readonly class ApiClient
                 ]);
 
                 if ($e->retryAfter !== null) {
-                    usleep((int) (((float) $e->retryAfter) * 1_000_000));
+                    $delay = min((int) ((float) $e->retryAfter), 30); // cap at 30 seconds
+                    usleep($delay * 1_000_000);
                 } else {
                     usleep(self::RETRY_DELAY_MS * 1000 * $attempt);
                 }
@@ -227,13 +228,19 @@ final readonly class ApiClient
                 'stream' => true,
             ]);
 
-            // SSRF check: if redirected (should not happen as we disabled redirects)
-            $effectiveUri = $response->getHeaderLine('X-Guzzle-Redirect-Status');
-            if ($effectiveUri !== '') {
-                $this->logger->warning('Unexpected redirect prevented', ['url' => $url]);
+            // SSRF check: if Guzzle followed a redirect despite ALLOW_REDIRECTS=false,
+            // check the effective URI against the original destination.
+            // При ALLOW_REDIRECTS=false этот заголовок не возникает — проверяем статус.
+            $statusCode = $response->getStatusCode();
+            if ($statusCode >= 300 && $statusCode < 400) {
+                $redirectTarget = $response->getHeaderLine('Location');
+                $this->logger->warning('Unexpected redirect prevented', [
+                    'url' => $url,
+                    'location' => $redirectTarget,
+                    'status' => $statusCode,
+                ]);
             }
 
-            $statusCode = $response->getStatusCode();
             $usage = $response->getHeaderLine('API-Usage-Limit') ?: null;
             $retryAfter = $response->getHeaderLine('Retry-After') ?: null;
 
@@ -340,8 +347,11 @@ final readonly class ApiClient
         // DNS resolve: check for private/loopback IPs
         $ips = @dns_get_record($host, \DNS_A | \DNS_AAAA);
         if ($ips === false || $ips === []) {
-            $this->logger->warning('DNS resolution failed for host', ['host' => $host]);
-            return;
+            throw new ApiException(
+                0,
+                "SSRF: DNS resolution failed for host {$host}",
+                isTransient: true,
+            );
         }
 
         foreach ($ips as $record) {
@@ -364,12 +374,17 @@ final readonly class ApiClient
      */
     private static function isPrivate(string $ip): bool
     {
+        // Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to plain IPv4
+        if (str_starts_with($ip, '::ffff:')) {
+            $ipv4Part = substr($ip, 7);
+            if (filter_var($ipv4Part, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4)) {
+                return self::isPrivateIPv4($ipv4Part);
+            }
+        }
+
         // IPv4
         if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4)) {
-            if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE)) {
-                return false;
-            }
-            return true;
+            return self::isPrivateIPv4($ip);
         }
 
         // IPv6 loopback (::1)
@@ -387,6 +402,14 @@ final readonly class ApiClient
         }
 
         return false;
+    }
+
+    /**
+     * Check if an IPv4 address is private or reserved.
+     */
+    private static function isPrivateIPv4(string $ip): bool
+    {
+        return !filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE);
     }
 
     private function buildUrl(string $path): string

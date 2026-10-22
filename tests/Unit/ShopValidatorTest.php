@@ -115,10 +115,10 @@ final class ShopValidatorTest extends TestCase
         $this->assertSame('demo.myinsales.ru', $result);
     }
 
-    #[TestDox('validate allows HTTP for loopback')]
-    public function testValidateAllowsHttpForLoopback(): void
+    #[TestDox('validate allows loopback address in allowed list')]
+    public function testValidateAllowsLoopback(): void
     {
-        $result = ShopValidator::validate('127.0.0.1', ['127.0.0.1'], true);
+        $result = ShopValidator::validate('127.0.0.1', ['127.0.0.1'], false);
         $this->assertSame('127.0.0.1', $result);
     }
 

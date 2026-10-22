@@ -46,6 +46,9 @@ final readonly class UninstallService
      * даже если строки stores ещё нет (неактивированная установка).
      * Вся проверка авторизации — внутри транзакции.
      *
+     * Авторизация по паролю active store — полная очистка (stores, sessions, candidates, generations).
+     * Авторизация по паролю кандидата — удаляет только этот кандидат и его reserved поколение.
+     *
      * @return bool True if uninstall was processed, false if nothing to remove (and token matches — no-op)
      * @throws \InvalidArgumentException
      */
@@ -60,8 +63,9 @@ final readonly class UninstallService
         // Вся проверка авторизации и cleanup — в одной транзакции
         $processed = false;
         $authorized = false;
+        $matchedCandidateId = null;
 
-        $this->db->transaction(function () use ($insalesId, $shop, $token, &$processed, &$authorized) {
+        $this->db->transaction(function () use ($insalesId, $shop, $token, &$processed, &$authorized, &$matchedCandidateId) {
             // 1. Пытаемся авторизоваться по активной store
             $store = $this->db->fetch(
                 'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
@@ -104,6 +108,7 @@ final readonly class UninstallService
                     $candidatePassword = $this->encryption->decrypt((string) $candidate['encrypted_password']);
                     if (hash_equals($candidatePassword, $token)) {
                         $authorized = true;
+                        $matchedCandidateId = (string) $candidate['id'];
                         break;
                     }
                 }
@@ -113,35 +118,56 @@ final readonly class UninstallService
                 throw new \InvalidArgumentException('Invalid uninstall token');
             }
 
-            // 3. Очистка: install_candidates и jobs
-            $this->db->execute(
-                'DELETE FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
-                ['store_id' => $insalesId, 'shop' => $shop],
-            );
+            if ($matchedCandidateId !== null) {
+                // Uninstall по паролю кандидата (активная установка ещё не завершена):
+                // удаляем только совпавший кандидат и его reserved поколение.
+                // Active поколение и чужих кандидатов не трогаем.
+                $this->db->execute(
+                    'DELETE FROM install_candidates WHERE id = :id',
+                    ['id' => $matchedCandidateId],
+                );
 
-            // Cancel pending generations
-            $this->db->execute(
-                'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND status = :reserved',
-                [
-                    'cancelled' => 'cancelled',
-                    'store_id' => $insalesId,
-                    'reserved' => 'reserved',
-                ],
-            );
+                $this->db->execute(
+                    'UPDATE installation_generations SET status = :cancelled
+                     WHERE store_id = :store_id AND candidate_id = :candidate_id AND status = :reserved',
+                    [
+                        'cancelled' => 'cancelled',
+                        'store_id' => $insalesId,
+                        'candidate_id' => $matchedCandidateId,
+                        'reserved' => 'reserved',
+                    ],
+                );
+            } else {
+                // Uninstall по паролю активной store — полная очистка
+                $this->db->execute(
+                    'DELETE FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
+                    ['store_id' => $insalesId, 'shop' => $shop],
+                );
 
-            // Отменяем активное поколение, если есть
-            $this->db->execute(
-                'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND status = :active',
-                [
-                    'cancelled' => 'cancelled',
-                    'store_id' => $insalesId,
-                    'active' => 'active',
-                ],
-            );
+                // Cancel pending generations
+                $this->db->execute(
+                    'UPDATE installation_generations SET status = :cancelled
+                     WHERE store_id = :store_id AND status = :reserved',
+                    [
+                        'cancelled' => 'cancelled',
+                        'store_id' => $insalesId,
+                        'reserved' => 'reserved',
+                    ],
+                );
 
-            // Отменяем задачи очереди
+                // Отменяем активное поколение
+                $this->db->execute(
+                    'UPDATE installation_generations SET status = :cancelled
+                     WHERE store_id = :store_id AND status = :active',
+                    [
+                        'cancelled' => 'cancelled',
+                        'store_id' => $insalesId,
+                        'active' => 'active',
+                    ],
+                );
+            }
+
+            // Отменяем задачи очереди для этого магазина
             $this->db->execute(
                 "UPDATE jobs SET status = 'failed', error = :error, completed_at = :now
                  WHERE store_id = :store_id AND status IN ('pending', 'running')",

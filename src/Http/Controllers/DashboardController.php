@@ -119,6 +119,8 @@ HTML;
                 return $this->renderHtml($response, 'Probe service not configured', 500);
             }
 
+            $sessionGen = (int) ($session['generation'] ?? 0);
+
             $store = $this->db->fetch(
                 'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $storeId, 'shop' => $shop],
@@ -126,6 +128,14 @@ HTML;
 
             if ($store === null) {
                 return $this->renderHtml($response, 'Store not found in database', 404);
+            }
+
+            // Проверяем, что поколение магазина совпадает с поколением сессии.
+            // Это предотвращает использование пароля от более новой активации
+            // для запроса, уже прошедшего middleware со старым поколением.
+            $storeGen = (int) ($store['generation'] ?? 0);
+            if ($storeGen !== $sessionGen) {
+                return $this->renderHtml($response, 'Session generation mismatch — please re-login', 401);
             }
 
             $password = $this->encryption->decrypt((string) $store['encrypted_password']);
