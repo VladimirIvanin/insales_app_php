@@ -28,8 +28,8 @@ final class PlatformSimulator
     private int $port = 0;
     private string $baseUrl = '';
 
-    private string $stateFile;
-    private string $docroot;
+    private string $stateFile = '';
+    private string $docroot = '';
 
     /** @var resource|null */
     private $process = null;
@@ -98,7 +98,12 @@ final class PlatformSimulator
             ['bypass_shell' => true],
         );
 
-        if ($this->process === false || !is_resource($this->process)) {
+        if ($this->process === false) {
+            $this->cleanup();
+            throw new \RuntimeException('Failed to start platform simulator');
+        }
+
+        if (!is_resource($this->process)) {
             $this->cleanup();
             throw new \RuntimeException('Failed to start platform simulator');
         }
@@ -132,7 +137,7 @@ final class PlatformSimulator
      */
     public function stop(): void
     {
-        if (is_resource($this->process)) {
+        if ($this->process !== null && $this->process !== false) {
             // Close pipes
             foreach ($this->pipes as $pipe) {
                 if (is_resource($pipe)) {

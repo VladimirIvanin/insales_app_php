@@ -14,14 +14,13 @@ use PHPUnit\Framework\TestCase;
 #[TestDox('Protocol formulas (MD5-based)')]
 final class ProtocolTest extends TestCase
 {
-    private array $vectors;
+    /** @var array<string, mixed> $vectors */
+    private array $vectors = [];
 
     protected function setUp(): void
     {
-        $this->vectors = json_decode(
-            file_get_contents(__DIR__ . '/../Fixtures/protocol-vectors.json'),
-            true,
-        );
+        $raw = file_get_contents(__DIR__ . '/../Fixtures/protocol-vectors.json');
+        $this->vectors = is_string($raw) ? json_decode($raw, true) : [];
     }
 
     #[TestDox('installPassword matches cross-language test vectors')]

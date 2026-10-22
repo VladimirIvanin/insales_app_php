@@ -73,6 +73,7 @@ final readonly class ApiClient
     /**
      * POST request with JSON body.
      *
+     * @param array<string, mixed> $data
      * @return array{data: mixed, usage: string|null}
      * @throws ApiException
      */
@@ -84,6 +85,7 @@ final readonly class ApiClient
     /**
      * PUT request with JSON body.
      *
+     * @param array<string, mixed> $data
      * @return array{data: mixed, usage: string|null}
      * @throws ApiException
      */
@@ -138,6 +140,7 @@ final readonly class ApiClient
     /**
      * Execute HTTP request with SSRF protection, retry, and logging.
      *
+     * @param array<string, mixed>|null $body
      * @return array{data: mixed, usage: string|null}
      * @throws ApiException
      */
@@ -192,6 +195,7 @@ final readonly class ApiClient
     /**
      * Execute single HTTP request.
      *
+     * @param array<string, mixed>|null $body
      * @return array{data: mixed, usage: string|null}
      * @throws ApiException
      */
@@ -204,7 +208,8 @@ final readonly class ApiClient
 
         $requestBody = null;
         if ($body !== null) {
-            $requestBody = json_encode($body, JSON_THROW_ON_ERROR);
+            $encoded = json_encode($body, JSON_THROW_ON_ERROR);
+            $requestBody = is_string($encoded) ? $encoded : null;
             $headers['Content-Type'] = 'application/json';
         }
 

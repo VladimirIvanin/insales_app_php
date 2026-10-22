@@ -120,7 +120,7 @@ final readonly class JobQueue
      * Атомарно: UPDATE … WHERE … RETURNING с учётом scheduled_at.
      * Зависшие running-задачи сбрасываются в pending перед каждым claim.
      *
-     * @return array|null Job data or null if none available
+     * @return array<string, mixed>|null Job data or null if none available
      */
     public function claim(): ?array
     {
@@ -151,7 +151,7 @@ final readonly class JobQueue
             return null;
         }
 
-        $job['payload'] = json_decode($job['payload'], true, 512, \JSON_THROW_ON_ERROR);
+        $job['payload'] = json_decode((string) $job['payload'], true, 512, \JSON_THROW_ON_ERROR);
 
         return $job;
     }

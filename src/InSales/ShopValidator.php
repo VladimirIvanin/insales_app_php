@@ -30,7 +30,7 @@ final readonly class ShopValidator
         }
 
         $host = $m[1];
-        $port = isset($m[2]) && $m[2] !== '' ? (int) $m[2] : null;
+        $port = isset($m[2]) ? (int) $m[2] : null;
 
         // Разрешаем только 443 или без порта
         if ($port !== null && $port !== 443) {
@@ -50,6 +50,8 @@ final readonly class ShopValidator
 
     /**
      * Check shop is in allowed list.
+     *
+     * @param array<int, string> $allowedShops
      */
     public static function isAllowed(string $shop, array $allowedShops): bool
     {
@@ -59,6 +61,8 @@ final readonly class ShopValidator
 
     /**
      * Validate shop — returns normalized host string or throws.
+     *
+     * @param array<int, string> $allowedShops
      */
     public static function validate(string $shop, array $allowedShops, bool $allowHttp): string
     {

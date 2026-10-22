@@ -12,12 +12,8 @@ namespace Infrastructure;
  */
 final readonly class Config
 {
-    private string $rootDir;
-
     public function __construct(string $rootDir)
     {
-        $this->rootDir = $rootDir;
-
         // Load .env file
         $envFile = $rootDir . '/.env';
         if (is_readable($envFile)) {

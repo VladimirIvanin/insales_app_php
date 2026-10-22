@@ -13,6 +13,7 @@ use PHPUnit\Framework\TestCase;
 #[TestDox('Encryption (XChaCha20-Poly1305 via sodium)')]
 final class EncryptionTest extends TestCase
 {
+    /** @phpstan-ignore-next-line Initialized in setUp() */
     private Encryption $encryption;
 
     protected function setUp(): void

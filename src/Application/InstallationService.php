@@ -28,6 +28,9 @@ final readonly class InstallationService
 {
     private const MAX_SHOP_LENGTH = 255;
 
+    /**
+     * @param array<int, string> $allowedShops
+     */
     public function __construct(
         private Database $db,
         private Encryption $encryption,
@@ -103,9 +106,9 @@ final readonly class InstallationService
             return; // Already removed (e.g., uninstall happened)
         }
 
-        $storeId = $candidate['store_id'];
-        $shop = $candidate['shop'];
-        $password = $this->encryption->decrypt($candidate['encrypted_password']);
+        $storeId = (string) $candidate['store_id'];
+        $shop = (string) $candidate['shop'];
+        $password = $this->encryption->decrypt((string) $candidate['encrypted_password']);
 
         try {
             $client = new ApiClient(

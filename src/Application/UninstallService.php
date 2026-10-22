@@ -22,10 +22,12 @@ use Infrastructure\Encryption;
  */
 final readonly class UninstallService
 {
+    /**
+     * @param array<int, string> $allowedShops
+     */
     public function __construct(
         private Database $db,
         private Encryption $encryption,
-        private string $appSecret,
         private array $allowedShops,
         private bool $allowHttp,
     ) {
@@ -55,14 +57,14 @@ final readonly class UninstallService
         $passwordToVerify = null;
 
         if ($store !== null) {
-            $passwordToVerify = $this->encryption->decrypt($store['encrypted_password']);
+            $passwordToVerify = $this->encryption->decrypt((string) $store['encrypted_password']);
         } else {
             $candidate = $this->db->fetch(
                 'SELECT * FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $insalesId, 'shop' => $shop],
             );
             if ($candidate !== null) {
-                $passwordToVerify = $this->encryption->decrypt($candidate['encrypted_password']);
+                $passwordToVerify = $this->encryption->decrypt((string) $candidate['encrypted_password']);
             }
         }
 

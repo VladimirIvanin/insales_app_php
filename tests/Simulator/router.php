@@ -25,6 +25,8 @@ if ($stateFile === false || $stateFile === '') {
 
 /**
  * Читает состояние из JSON-файла с эксклюзивной блокировкой.
+ *
+ * @return array<string, mixed>
  */
 function sim_read_state(string $path): array
 {
@@ -42,6 +44,8 @@ function sim_read_state(string $path): array
 
 /**
  * Пишет состояние в JSON-файл с эксклюзивной блокировкой.
+ *
+ * @param array<string, mixed> $state
  */
 function sim_write_state(string $path, array $state): void
 {
@@ -85,7 +89,7 @@ if (!empty($state['scripted_responses'])) {
         array_shift($state['scripted_responses']);
         sim_write_state($stateFile, $state);
 
-        if (!empty($scripted['delay'])) {
+        if (($scripted['delay'] ?? 0) > 0) {
             usleep((int) $scripted['delay'] * 1000);
         }
         if (!empty($scripted['disconnect'])) {
@@ -193,7 +197,12 @@ if (preg_match('#^/admin/applications/([^/]+)/login$#', $uri, $m) && $method ===
 
     $token3 = md5($nonce . $userEmail . $userName . $userId . $emailConfirmed . $password);
 
-    $separator = (parse_url($loginUrl, PHP_URL_QUERY) ? '&' : '?');
+    $queryParts = [];
+    $queryStr = parse_url($loginUrl, PHP_URL_QUERY);
+    if (is_string($queryStr)) {
+        parse_str($queryStr, $queryParts);
+    }
+    $separator = $queryParts !== [] ? '&' : '?';
     $redirectUrl = $loginUrl . $separator . http_build_query([
         'token' => md5($nonce . $password),
         'token2' => md5($nonce . $userEmail . $userName . $userId . $password),

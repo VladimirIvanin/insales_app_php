@@ -87,8 +87,7 @@ final readonly class LoginService
     /**
      * Handle autologin callback from InSales.
      *
-     * @param string $sessionId Pending session ID (from cookie)
-     * @param array $params Callback parameters (token3, user_email, user_name, user_id, email_confirmed)
+     * @param array<string, mixed> $params
      * @return array{authToken: string, storeId: string} Authenticated session token
      * @throws LoginException
      */
@@ -109,19 +108,19 @@ final readonly class LoginService
                 throw new LoginException('Login challenge not found or already used');
             }
 
-            if ($pending['expires_at'] < time()) {
+            if ((int) $pending['expires_at'] < time()) {
                 throw new LoginException('Login challenge expired');
             }
 
-            $store = $this->getStore($pending['store_id']);
+            $store = $this->getStore((string) $pending['store_id']);
 
             $expectedToken3 = Protocol::token3(
-                $pending['nonce'],
-                $params['user_email'] ?? '',
-                $params['user_name'] ?? '',
-                $params['user_id'] ?? '',
-                $params['email_confirmed'] ?? 'false',
-                $store['password'],
+                (string) $pending['nonce'],
+                (string) ($params['user_email'] ?? ''),
+                (string) ($params['user_name'] ?? ''),
+                (string) ($params['user_id'] ?? ''),
+                (string) ($params['email_confirmed'] ?? 'false'),
+                (string) $store['password'],
             );
 
             $signature = $params['token3'] ?? '';
@@ -158,7 +157,7 @@ final readonly class LoginService
                 [
                     'id' => $authToken,
                     'store_id' => $store['store_id'],
-                    'user_id' => $params['user_id'] ?? '0',
+                    'user_id' => (string) ($params['user_id'] ?? '0'),
                     'generation' => $store['generation'],
                     'expires_at' => time() + self::SESSION_TTL,
                     'created_at' => time(),
@@ -181,7 +180,7 @@ final readonly class LoginService
     /**
      * Validate an active session.
      *
-     * @return array|null Session data or null if invalid/expired
+     * @return array<string, mixed>|null Session data or null if invalid/expired
      */
     public function validateSession(string $authToken): ?array
     {
@@ -198,7 +197,9 @@ final readonly class LoginService
         }
 
         // Check that session generation matches store generation
-        if ((int) $session['generation'] !== (int) ($session['store_generation'] ?? 0)) {
+        $generation = isset($session['generation']) ? (int) $session['generation'] : 0;
+        $storeGeneration = isset($session['store_generation']) ? (int) $session['store_generation'] : 0;
+        if ($generation !== $storeGeneration) {
             $this->db->execute('DELETE FROM sessions WHERE id = :id', ['id' => $authToken]);
             return null;
         }
@@ -217,6 +218,8 @@ final readonly class LoginService
     /**
      * Get store by ID and optionally verify shop.
      * Returns store data with decrypted password.
+     *
+     * @return array<string, mixed>
      */
     private function getStore(string $storeId, ?string $shop = null): array
     {
@@ -236,7 +239,7 @@ final readonly class LoginService
             throw new LoginException('Store is not installed');
         }
 
-        $store['password'] = $this->encryption->decrypt($store['encrypted_password']);
+        $store['password'] = $this->encryption->decrypt((string) $store['encrypted_password']);
 
         return $store;
     }

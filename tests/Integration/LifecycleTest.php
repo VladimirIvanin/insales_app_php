@@ -37,6 +37,7 @@ final class LifecycleTest extends TestCase
 
     private string $appId = 'test-app-id';
     private string $appSecret = 'test-app-secret';
+    /** @var array<int, string> */
     private array $allowedShops = ['test.myshop.ru', '127.0.0.1'];
 
     public static function setUpBeforeClass(): void
@@ -136,14 +137,16 @@ final class LifecycleTest extends TestCase
         $this->assertNotEmpty($loginResult['nonce']);
         $this->assertNotEmpty($loginResult['sessionId']);
         $this->assertStringContainsString('/admin/applications/', $loginResult['redirectUrl']);
+        /** @var non-empty-string $simulatorUrl */
+        $simulatorUrl = self::$simulatorUrl;
         $this->assertStringStartsWith(
-            self::$simulatorUrl,
+            $simulatorUrl,
             $loginResult['redirectUrl'],
             'redirectUrl должен начинаться с URL симулятора'
         );
 
         // 5. Расшифровываем пароль для проверок
-        $decryptedPassword = self::$encryption->decrypt($store['encrypted_password']);
+        $decryptedPassword = self::$encryption->decrypt((string) $store['encrypted_password']);
 
         // 6. Выполняем HTTP-запрос редиректа к симулятору и сверяем token3
         $ch = curl_init();
@@ -164,22 +167,25 @@ final class LifecycleTest extends TestCase
         $this->assertNotNull($redirectUrl, 'Должен быть редирект');
 
         $redirectParts = [];
-        parse_str(parse_url($redirectUrl, PHP_URL_QUERY), $redirectParts);
+        $redirectQuery = parse_url((string) $redirectUrl, PHP_URL_QUERY);
+        if (is_string($redirectQuery)) {
+            parse_str($redirectQuery, $redirectParts);
+        }
 
         $this->assertArrayHasKey('token3', $redirectParts);
         $this->assertArrayHasKey('user_email', $redirectParts);
 
         $expectedToken3FromRedirect = Protocol::token3(
             $loginResult['nonce'],
-            $redirectParts['user_email'],
-            $redirectParts['user_name'] ?? '',
-            $redirectParts['user_id'] ?? '',
-            $redirectParts['email_confirmed'] ?? 'true',
+            (string) ($redirectParts['user_email'] ?? ''),
+            (string) ($redirectParts['user_name'] ?? ''),
+            (string) ($redirectParts['user_id'] ?? ''),
+            (string) ($redirectParts['email_confirmed'] ?? 'true'),
             $decryptedPassword,
         );
         $this->assertSame(
             $expectedToken3FromRedirect,
-            $redirectParts['token3'],
+            (string) ($redirectParts['token3'] ?? ''),
             'token3 из редиректа симулятора должен совпадать с Protocol::token3'
         );
 
@@ -256,7 +262,7 @@ final class LifecycleTest extends TestCase
         // Login to store 1
         $login1 = $this->loginService->initiateLogin($storeId1, $shop1);
         $store1 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId1]);
-        $passDec1 = self::$encryption->decrypt($store1['encrypted_password']);
+        $passDec1 = self::$encryption->decrypt((string) $store1['encrypted_password']);
         $expectedT3_1 = Protocol::token3($login1['nonce'], 'admin1@test.com', 'Admin1', '1', 'true', $passDec1);
         $auth1 = $this->loginService->handleAutologin($login1['sessionId'], [
             'token3' => $expectedT3_1, 'user_email' => 'admin1@test.com',
@@ -266,7 +272,7 @@ final class LifecycleTest extends TestCase
         // Login to store 2
         $login2 = $this->loginService->initiateLogin($storeId2, $shop2);
         $store2 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId2]);
-        $passDec2 = self::$encryption->decrypt($store2['encrypted_password']);
+        $passDec2 = self::$encryption->decrypt((string) $store2['encrypted_password']);
         $expectedT3_2 = Protocol::token3($login2['nonce'], 'admin2@test.com', 'Admin2', '2', 'true', $passDec2);
         $auth2 = $this->loginService->handleAutologin($login2['sessionId'], [
             'token3' => $expectedT3_2, 'user_email' => 'admin2@test.com',
@@ -344,7 +350,7 @@ final class LifecycleTest extends TestCase
         );
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $password = self::$encryption->decrypt($store['encrypted_password']);
+        $password = self::$encryption->decrypt((string) $store['encrypted_password']);
         $expectedToken3 = Protocol::token3(
             $loginResult['nonce'],
             'admin@test.com',
@@ -384,7 +390,7 @@ final class LifecycleTest extends TestCase
         $loginResult = $this->loginService->initiateLogin($storeId, $shop);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $storePass = self::$encryption->decrypt($store['encrypted_password']);
+        $storePass = self::$encryption->decrypt((string) $store['encrypted_password']);
         $expectedToken3 = Protocol::token3(
             $loginResult['nonce'],
             'admin@test.com',
@@ -444,7 +450,7 @@ final class LifecycleTest extends TestCase
         self::$queue->complete((int) $job['id']);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $passDec = self::$encryption->decrypt($store['encrypted_password']);
+        $passDec = self::$encryption->decrypt((string) $store['encrypted_password']);
 
         // Uninstall
         $this->uninstallService->handleUninstall($shop, $passDec, $storeId);
@@ -490,7 +496,7 @@ final class LifecycleTest extends TestCase
         $this->assertSame('Updated', $store['title']);
 
         // Old sessions should be invalidated
-        $decryptedNew = self::$encryption->decrypt($store['encrypted_password']);
+        $decryptedNew = self::$encryption->decrypt((string) $store['encrypted_password']);
         $this->assertNotSame($password1, $decryptedNew);
     }
 

@@ -128,7 +128,7 @@ HTML;
                 return $this->renderHtml($response, 'Store not found in database', 404);
             }
 
-            $password = $this->encryption->decrypt($store['encrypted_password']);
+            $password = $this->encryption->decrypt((string) $store['encrypted_password']);
 
             $client = new ApiClient(
                 appId: $this->appId,

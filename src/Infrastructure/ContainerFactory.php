@@ -84,11 +84,10 @@ final readonly class ContainerFactory
             );
         });
 
-        $container->set(UninstallService::class, function (ContainerInterface $c) use ($appSecret, $allowedShops, $allowHttp) {
+        $container->set(UninstallService::class, function (ContainerInterface $c) use ($allowedShops, $allowHttp) {
             return new UninstallService(
                 $c->get(Database::class),
                 $c->get(Encryption::class),
-                $appSecret,
                 $allowedShops,
                 $allowHttp,
             );
