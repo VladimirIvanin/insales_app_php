@@ -208,4 +208,20 @@ final readonly class JobQueue
 
         return false;
     }
+
+    /**
+     * Cancel all pending and running jobs for a store.
+     * Used during uninstall to prevent orphaned job processing.
+     */
+    public function cancelByStoreId(string $storeId): void
+    {
+        $this->db->execute(
+            'DELETE FROM jobs WHERE store_id = :store_id AND status IN (:pending, :running)',
+            [
+                'store_id' => $storeId,
+                'pending' => 'pending',
+                'running' => 'running',
+            ],
+        );
+    }
 }

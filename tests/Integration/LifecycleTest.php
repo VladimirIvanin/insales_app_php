@@ -31,9 +31,9 @@ final class LifecycleTest extends TestCase
     private static Database $db;
     private static Encryption $encryption;
     private static JobQueue $queue;
-    private static InstallationService $installationService;
-    private static LoginService $loginService;
-    private static UninstallService $uninstallService;
+    private InstallationService $installationService;
+    private LoginService $loginService;
+    private UninstallService $uninstallService;
 
     private string $appId = 'test-app-id';
     private string $appSecret = 'test-app-secret';
@@ -70,6 +70,7 @@ final class LifecycleTest extends TestCase
         self::$db->execute('DELETE FROM pending_logins');
         self::$db->execute('DELETE FROM sessions');
         self::$db->execute('DELETE FROM jobs');
+        self::$db->execute('DELETE FROM installation_generations');
 
         self::$simulator->reset();
 

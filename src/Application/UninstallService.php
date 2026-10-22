@@ -42,7 +42,7 @@ final readonly class UninstallService
     /**
      * Handle uninstall callback from InSales.
      *
-     * Всегда чистит install_candidates и jobs для store_id/shop,
+     * Всегда чистит install_candidates, generations и jobs для store_id/shop,
      * даже если строки stores ещё нет (неактивированная установка).
      * Вся проверка авторизации — внутри транзакции.
      *
@@ -116,9 +116,32 @@ final readonly class UninstallService
                 ['store_id' => $insalesId, 'shop' => $shop],
             );
 
+            // Cancel pending generations
+            $this->db->execute(
+                'UPDATE installation_generations SET status = :cancelled
+                 WHERE store_id = :store_id AND status = :reserved',
+                [
+                    'cancelled' => 'cancelled',
+                    'store_id' => $insalesId,
+                    'reserved' => 'reserved',
+                ],
+            );
+
+            // Отменяем активное поколение, если есть
+            $this->db->execute(
+                'UPDATE installation_generations SET status = :cancelled
+                 WHERE store_id = :store_id AND status = :active',
+                [
+                    'cancelled' => 'cancelled',
+                    'store_id' => $insalesId,
+                    'active' => 'active',
+                ],
+            );
+
+            // Отменяем задачи очереди
             $this->db->execute(
                 "UPDATE jobs SET status = 'failed', error = :error, completed_at = :now
-                 WHERE store_id = :store_id AND status = 'pending'",
+                 WHERE store_id = :store_id AND status IN ('pending', 'running')",
                 [
                     'store_id' => $insalesId,
                     'error' => 'Uninstalled',
