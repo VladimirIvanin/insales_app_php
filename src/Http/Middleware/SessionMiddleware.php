@@ -24,7 +24,8 @@ final readonly class SessionMiddleware implements MiddlewareInterface
     public function __construct(
         private LoginService $loginService,
         private string $baseUrl,
-    ) {}
+    ) {
+    }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {

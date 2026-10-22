@@ -37,7 +37,8 @@ final readonly class InstallationService
         private array $allowedShops,
         private bool $allowHttp,
         private ?string $platformBaseUrl = null,
-    ) {}
+    ) {
+    }
 
     /**
      * Handle install callback from InSales.

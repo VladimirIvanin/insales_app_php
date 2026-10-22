@@ -11,8 +11,12 @@
         "guzzlehttp/guzzle": "^7.9",
         "vlucas/phpdotenv": "^5.6",
         "ext-pdo": "*",
+        "ext-pdo_sqlite": "*",
         "ext-sodium": "*",
         "ext-mbstring": "*",
+        "ext-pcntl": "*",
+        "ext-sockets": "*",
+        "ext-curl": "*",
         "psr/log": "^3.0"
     },
     "require-dev": {

@@ -17,7 +17,8 @@ final readonly class LoginController
         private LoginService $loginService,
         private SessionMiddleware $sessionMiddleware,
         private string $baseUrl,
-    ) {}
+    ) {
+    }
 
     /**
      * Handle GET /login — initiate employee login via InSales.

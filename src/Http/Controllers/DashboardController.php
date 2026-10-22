@@ -14,7 +14,12 @@ final readonly class DashboardController
     public function __construct(
         private string $appId,
         private bool $allowHttp,
-    ) {}
+        private ?\Infrastructure\Database $db = null,
+        private ?\Infrastructure\Encryption $encryption = null,
+        private ?\Psr\Log\LoggerInterface $logger = null,
+        private ?string $platformBaseUrl = null,
+    ) {
+    }
 
     /**
      * GET / — main dashboard (requires authenticated session).
@@ -96,41 +101,71 @@ HTML;
 
     /**
      * GET /probe — test API connectivity (requires authenticated session).
+     * Выполняет реальный API-запрос account.read к InSales.
      */
     public function probe(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $session = $request->getAttribute('session');
 
         $shop = (string) ($session['shop'] ?? '');
-        $password = (string) ($session['password'] ?? '');
+        $storeId = (string) ($session['store_id'] ?? '');
 
-        // Note: In production, password should be fetched from encrypted store.
-        // Since we join stores in session middleware, we have the session data only.
-        // For probe we need to re-fetch from LoginService.
-        // Here we show the pattern: the controller delegates to a service.
+        if ($shop === '' || $storeId === '') {
+            return $this->renderHtml($response, 'Session data incomplete', 400);
+        }
 
         try {
-            // The actual probe would use InSalesClient, but we'd need the decrypted password.
-            // In a real app, you'd inject a service that handles this.
-            // For demo purposes, we show the structure.
+            if ($this->db === null || $this->encryption === null) {
+                return $this->renderHtml($response, 'Probe service not configured', 500);
+            }
+
+            $store = $this->db->fetch(
+                'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
+                ['store_id' => $storeId, 'shop' => $shop],
+            );
+
+            if ($store === null) {
+                return $this->renderHtml($response, 'Store not found in database', 404);
+            }
+
+            $password = $this->encryption->decrypt($store['encrypted_password']);
+
+            $client = new ApiClient(
+                appId: $this->appId,
+                shop: $shop,
+                password: $password,
+                allowHttp: $this->allowHttp,
+                logger: $this->logger ?? new \Psr\Log\NullLogger(),
+                platformBaseUrl: $this->platformBaseUrl,
+            );
+
+            $account = $client->getAccount();
+
+            $accountId = htmlspecialchars((string) ($account['id'] ?? '?'), ENT_QUOTES, 'UTF-8');
+            $accountTitle = htmlspecialchars((string) ($account['title'] ?? '?'), ENT_QUOTES, 'UTF-8');
+
             $html = <<<HTML
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <title>API Probe</title>
+    <title>API Probe — успех</title>
     <style>
         body { font: 18px system-ui; max-width: 720px; margin: 60px auto; padding: 24px; background: #f4f7fb; color: #192a40; }
         main { background: white; border-radius: 16px; padding: 32px; }
         pre { background: #f0f2f5; padding: 16px; border-radius: 8px; overflow-x: auto; }
+        .success { background: #d4edda; color: #155724; padding: 12px 20px; border-radius: 8px; margin: 16px 0; }
+        .info-row { margin: 8px 0; }
+        .label { color: #667; font-size: 14px; }
     </style>
 </head>
 <body>
     <main>
-        <h1>API магазина</h1>
-        <p>Магазин: {$shop}</p>
-        <p>Для выполнения API-запроса пароль подключения должен быть расшифрован сервисным слоем
-           с использованием <code>Infrastructure\\Encryption</code>.</p>
+        <h1>Проверка API магазина</h1>
+        <div class="success">✓ API-запрос выполнен успешно</div>
+        <div class="info-row"><span class="label">Магазин:</span> {$shop}</div>
+        <div class="info-row"><span class="label">ID аккаунта:</span> {$accountId}</div>
+        <div class="info-row"><span class="label">Название:</span> {$accountTitle}</div>
         <p><a href="/">Вернуться в приложение</a></p>
     </main>
 </body>
@@ -140,8 +175,12 @@ HTML;
             return $response->withHeader('Content-Type', 'text/html; charset=utf-8')
                 ->withHeader('Cache-Control', 'no-store')
                 ->withHeader('X-Content-Type-Options', 'nosniff');
-        } catch (\Throwable $e) {
+        } catch (\InSales\ApiException $e) {
+            $this->logger?->error('API probe failed', ['shop' => $shop, 'error' => $e->getMessage()]);
             return $this->renderHtml($response, 'Ошибка API: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'), 502);
+        } catch (\Throwable $e) {
+            $this->logger?->error('API probe error', ['shop' => $shop, 'error' => $e->getMessage()]);
+            return $this->renderHtml($response, 'Ошибка: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'), 502);
         }
     }
 

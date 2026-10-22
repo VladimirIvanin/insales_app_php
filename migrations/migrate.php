@@ -11,4 +11,5 @@ declare(strict_types=1);
 
 return [
     1 => file_get_contents(__DIR__ . '/001_initial_schema.sql'),
+    2 => file_get_contents(__DIR__ . '/002_fix_install_candidates_fk.sql'),
 ];

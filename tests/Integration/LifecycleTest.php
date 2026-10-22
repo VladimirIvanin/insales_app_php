@@ -11,7 +11,7 @@ use InSales\Protocol;
 use Infrastructure\Database;
 use Infrastructure\Encryption;
 use Infrastructure\JobQueue;
-use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
 use Tests\Simulator\PlatformSimulator;
@@ -22,6 +22,7 @@ use Tests\Simulator\PlatformSimulator;
  * These tests use the real InSalesClient against a local HTTP simulator,
  * verify the full install → login → API access → uninstall flow.
  */
+#[CoversNothing]
 #[TestDox('Full lifecycle against platform simulator')]
 final class LifecycleTest extends TestCase
 {
@@ -135,8 +136,11 @@ final class LifecycleTest extends TestCase
         $this->assertNotEmpty($loginResult['nonce']);
         $this->assertNotEmpty($loginResult['sessionId']);
         $this->assertStringContainsString('/admin/applications/', $loginResult['redirectUrl']);
-        $this->assertStringStartsWith(self::$simulatorUrl, $loginResult['redirectUrl'],
-            'redirectUrl должен начинаться с URL симулятора');
+        $this->assertStringStartsWith(
+            self::$simulatorUrl,
+            $loginResult['redirectUrl'],
+            'redirectUrl должен начинаться с URL симулятора'
+        );
 
         // 5. Расшифровываем пароль для проверок
         $decryptedPassword = self::$encryption->decrypt($store['encrypted_password']);
@@ -173,8 +177,11 @@ final class LifecycleTest extends TestCase
             $redirectParts['email_confirmed'] ?? 'true',
             $decryptedPassword,
         );
-        $this->assertSame($expectedToken3FromRedirect, $redirectParts['token3'],
-            'token3 из редиректа симулятора должен совпадать с Protocol::token3');
+        $this->assertSame(
+            $expectedToken3FromRedirect,
+            $redirectParts['token3'],
+            'token3 из редиректа симулятора должен совпадать с Protocol::token3'
+        );
 
         // 7. Simulate autologin callback
         $expectedToken3 = Protocol::token3(
@@ -339,7 +346,12 @@ final class LifecycleTest extends TestCase
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $password = self::$encryption->decrypt($store['encrypted_password']);
         $expectedToken3 = Protocol::token3(
-            $loginResult['nonce'], 'admin@test.com', 'Admin', '1', 'true', $password,
+            $loginResult['nonce'],
+            'admin@test.com',
+            'Admin',
+            '1',
+            'true',
+            $password,
         );
 
         $this->expectException(\Application\LoginException::class);
@@ -374,7 +386,12 @@ final class LifecycleTest extends TestCase
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $storePass = self::$encryption->decrypt($store['encrypted_password']);
         $expectedToken3 = Protocol::token3(
-            $loginResult['nonce'], 'admin@test.com', 'Admin', '1', 'true', $storePass,
+            $loginResult['nonce'],
+            'admin@test.com',
+            'Admin',
+            '1',
+            'true',
+            $storePass,
         );
 
         // First use succeeds

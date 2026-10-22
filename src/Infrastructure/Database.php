@@ -121,21 +121,44 @@ final readonly class Database
     /**
      * Apply migrations.
      *
+     * Использует BEGIN IMMEDIATE для сериализации между процессами.
+     * Повторно читает версию внутри транзакции.
+     *
      * @param array<int, string> $migrations Array of SQL strings indexed by version
      */
     public function migrate(array $migrations, int $targetVersion = 0): void
     {
-        // Create schema version table
         $this->pdo->exec('CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER)');
 
-        $current = (int) ($this->fetch('SELECT MAX(version) as v FROM _schema_version')['v'] ?? 0);
-        $target = $targetVersion > 0 ? $targetVersion : \count($migrations);
+        $maxAttempts = 3;
+        for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
+            try {
+                // Используем IMMEDIATE (уже открывает транзакцию)
+                $this->pdo->exec('BEGIN IMMEDIATE');
 
-        foreach ($migrations as $version => $sql) {
-            if ($version > $current && $version <= $target) {
-                $this->pdo->exec($sql);
-                $this->pdo->prepare('INSERT INTO _schema_version (version, applied_at) VALUES (:v, :t)')
-                    ->execute(['v' => $version, 't' => time()]);
+                $current = (int) ($this->fetch('SELECT MAX(version) as v FROM _schema_version')['v'] ?? 0);
+                $target = $targetVersion > 0 ? $targetVersion : \count($migrations);
+
+                $applied = false;
+                foreach ($migrations as $version => $sql) {
+                    if ($version > $current && $version <= $target) {
+                        $this->pdo->exec($sql);
+                        $this->pdo->prepare('INSERT INTO _schema_version (version, applied_at) VALUES (:v, :t)')
+                            ->execute(['v' => $version, 't' => time()]);
+                        $applied = true;
+                    }
+                }
+
+                $this->pdo->commit();
+                return;
+            } catch (\PDOException $e) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                if ($attempt >= $maxAttempts - 1) {
+                    throw $e;
+                }
+                usleep(100_000 * ($attempt + 1));
             }
         }
     }

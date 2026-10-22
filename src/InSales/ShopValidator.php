@@ -69,6 +69,11 @@ final readonly class ShopValidator
             throw new \InvalidArgumentException("Shop '{$shop}' is not in ALLOWED_SHOPS");
         }
 
+        // Plain HTTP разрешён только для loopback-адресов (dev-режим)
+        if (!$allowHttp && !self::isLoopback($host)) {
+            throw new \InvalidArgumentException('Plain HTTP is only allowed for loopback addresses');
+        }
+
         // Reconstruct canonical form for comparison
         return $parsed['port'] !== null ? "{$host}:{$parsed['port']}" : $host;
     }

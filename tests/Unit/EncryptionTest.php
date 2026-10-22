@@ -21,13 +21,6 @@ final class EncryptionTest extends TestCase
             str_repeat("\x00", SODIUM_CRYPTO_SECRETBOX_KEYBYTES)
         );
         $this->encryption = new Encryption($keyHex);
-
-        // Override with deterministic key for test
-        // Using reflection to force a known key
-        $refl = new \ReflectionClass($this->encryption);
-        $keyProp = $refl->getProperty('key');
-        $keyProp->setAccessible(true);
-        $keyProp->setValue($this->encryption, str_repeat("\x00", SODIUM_CRYPTO_SECRETBOX_KEYBYTES));
     }
 
     #[TestDox('round-trip encrypt/decrypt')]

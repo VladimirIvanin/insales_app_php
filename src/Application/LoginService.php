@@ -32,7 +32,8 @@ final readonly class LoginService
         private string $appId,
         private string $baseUrl,
         private ?string $platformBaseUrl = null,
-    ) {}
+    ) {
+    }
 
     /**
      * Initiate login: generate nonce bound to store.
@@ -93,50 +94,56 @@ final readonly class LoginService
      */
     public function handleAutologin(string $sessionId, array $params): array
     {
-        // Read the pending challenge (do NOT delete yet)
-        $pending = $this->db->fetch(
-            'SELECT * FROM pending_logins WHERE session_id = :sid',
-            ['sid' => $sessionId],
-        );
-
-        if ($pending === null) {
-            throw new LoginException('Login challenge not found or already used');
-        }
-
-        if ($pending['expires_at'] < time()) {
-            throw new LoginException('Login challenge expired');
-        }
-
-        $store = $this->getStore($pending['store_id']);
-
-        $expectedToken3 = Protocol::token3(
-            $pending['nonce'],
-            $params['user_email'] ?? '',
-            $params['user_name'] ?? '',
-            $params['user_id'] ?? '',
-            $params['email_confirmed'] ?? 'false',
-            $store['password'],
-        );
-
-        $signature = $params['token3'] ?? '';
-
-        if (!preg_match('/^[a-f0-9]{32}$/', $signature)) {
-            throw new LoginException('Invalid token3 format');
-        }
-
-        if (!hash_equals($expectedToken3, $signature)) {
-            throw new LoginException('Invalid token3 signature');
-        }
-
-        // Atomically consume challenge + create session
         $authToken = bin2hex(random_bytes(32));
+        $resultStoreId = null;
 
-        $this->db->transaction(function () use ($sessionId, $store, $params, $authToken) {
-            // Удаляем nonce
-            $this->db->execute(
+        // Всю проверку и потребление — в одной транзакции для атомарности
+        $this->db->transaction(function () use ($sessionId, $params, $authToken, &$resultStoreId) {
+            // Читаем challenge внутри транзакции
+            $pending = $this->db->fetch(
+                'SELECT * FROM pending_logins WHERE session_id = :sid',
+                ['sid' => $sessionId],
+            );
+
+            if ($pending === null) {
+                throw new LoginException('Login challenge not found or already used');
+            }
+
+            if ($pending['expires_at'] < time()) {
+                throw new LoginException('Login challenge expired');
+            }
+
+            $store = $this->getStore($pending['store_id']);
+
+            $expectedToken3 = Protocol::token3(
+                $pending['nonce'],
+                $params['user_email'] ?? '',
+                $params['user_name'] ?? '',
+                $params['user_id'] ?? '',
+                $params['email_confirmed'] ?? 'false',
+                $store['password'],
+            );
+
+            $signature = $params['token3'] ?? '';
+
+            if (!preg_match('/^[a-f0-9]{32}$/', $signature)) {
+                throw new LoginException('Invalid token3 format');
+            }
+
+            if (!hash_equals($expectedToken3, $signature)) {
+                throw new LoginException('Invalid token3 signature');
+            }
+
+            // Потребляем challenge (атомарно: проверяем, что ровно одна строка удалена)
+            $deleted = $this->db->execute(
                 'DELETE FROM pending_logins WHERE session_id = :sid',
                 ['sid' => $sessionId],
             );
+
+            if ($deleted !== 1) {
+                // Другой запрос уже потребил этот challenge
+                throw new LoginException('Login challenge not found or already used');
+            }
 
             // Очищаем expired сессии
             $this->db->execute(
@@ -157,11 +164,17 @@ final readonly class LoginService
                     'created_at' => time(),
                 ],
             );
+
+            $resultStoreId = $store['store_id'];
         });
+
+        if ($resultStoreId === null) {
+            throw new LoginException('Login challenge not found or already used');
+        }
 
         return [
             'authToken' => $authToken,
-            'storeId' => $store['store_id'],
+            'storeId' => $resultStoreId,
         ];
     }
 

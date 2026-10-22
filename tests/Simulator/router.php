@@ -26,7 +26,8 @@ if ($stateFile === false || $stateFile === '') {
 /**
  * Читает состояние из JSON-файла с эксклюзивной блокировкой.
  */
-function sim_read_state(string $path): array {
+function sim_read_state(string $path): array
+{
     $fp = fopen($path, 'rb');
     if ($fp === false) {
         return [];
@@ -42,7 +43,8 @@ function sim_read_state(string $path): array {
 /**
  * Пишет состояние в JSON-файл с эксклюзивной блокировкой.
  */
-function sim_write_state(string $path, array $state): void {
+function sim_write_state(string $path, array $state): void
+{
     $fp = fopen($path, 'cb');
     if ($fp === false) {
         return;

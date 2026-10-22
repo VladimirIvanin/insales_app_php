@@ -42,7 +42,8 @@ final class PlatformSimulator
     public function __construct(
         private string $appId = 'test-app-id',
         private string $appSecret = 'test-app-secret',
-    ) {}
+    ) {
+    }
 
     public function __destruct()
     {

@@ -21,7 +21,10 @@ if (PHP_VERSION_ID < 80400) {
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-pcntl_async_signals(true);
+// Graceful fallback if pcntl is not available
+if (function_exists('pcntl_async_signals')) {
+    pcntl_async_signals(true);
+}
 
 use Infrastructure\Config;
 use Infrastructure\ContainerFactory;
@@ -39,10 +42,12 @@ $db = $container->get(\Infrastructure\Database::class);
 $queue = $container->get(JobQueue::class);
 $installationService = $container->get(InstallationService::class);
 
-// Graceful shutdown
+// Graceful shutdown (with pcntl fallback)
 $shutdown = false;
-pcntl_signal(SIGTERM, function () use (&$shutdown) { $shutdown = true; });
-pcntl_signal(SIGINT, function () use (&$shutdown) { $shutdown = true; });
+if (function_exists('pcntl_signal')) {
+    pcntl_signal(SIGTERM, function () use (&$shutdown) { $shutdown = true; });
+    pcntl_signal(SIGINT, function () use (&$shutdown) { $shutdown = true; });
+}
 
 fwrite(STDOUT, "Worker started (poll interval: {$pollInterval}s)\n");
 

@@ -12,7 +12,8 @@ final readonly class UninstallController
 {
     public function __construct(
         private UninstallService $uninstallService,
-    ) {}
+    ) {
+    }
 
     /**
      * Handle GET /uninstall callback from InSales.

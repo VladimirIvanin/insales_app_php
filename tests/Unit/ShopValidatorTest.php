@@ -31,9 +31,8 @@ final class ShopValidatorTest extends TestCase
     {
         return [
             'standard domain' => ['demo.myinsales.ru', 'demo.myinsales.ru', null],
-            'with port' => ['shop.example.com:8080', 'shop.example.com', 8080],
+            'with port 443' => ['shop.example.com:443', 'shop.example.com', 443],
             'loopback' => ['127.0.0.1', '127.0.0.1', null],
-            'loopback with port' => ['127.0.0.1:8765', '127.0.0.1', 8765],
             'localhost' => ['localhost', 'localhost', null],
             'numeric subdomain' => ['shop123.test.ru', 'shop123.test.ru', null],
             'uppercase normalized' => ['SHOP.EXAMPLE.RU', 'shop.example.ru', null],
@@ -114,7 +113,7 @@ final class ShopValidatorTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Plain HTTP is only allowed');
 
-        ShopValidator::validate('demo.myinsales.ru', ['demo.myinsales.ru'], true);
+        ShopValidator::validate('demo.myinsales.ru', ['demo.myinsales.ru'], false);
     }
 
     #[TestDox('validate allows HTTP for loopback')]

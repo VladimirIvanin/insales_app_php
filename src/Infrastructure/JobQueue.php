@@ -61,14 +61,15 @@ final readonly class JobQueue
     public function push(string $type, array $payload = [], ?string $storeId = null): int
     {
         $this->db->execute(
-            'INSERT INTO jobs (queue, type, payload, store_id, status, created_at, retries_left)
-             VALUES (:queue, :type, :payload, :store_id, :status, :created_at, :retries_left)',
+            'INSERT INTO jobs (queue, type, payload, store_id, status, scheduled_at, created_at, retries_left)
+             VALUES (:queue, :type, :payload, :store_id, :status, :scheduled_at, :created_at, :retries_left)',
             [
                 'queue' => $this->queueName,
                 'type' => $type,
                 'payload' => json_encode($payload, \JSON_THROW_ON_ERROR),
                 'store_id' => $storeId,
                 'status' => 'pending',
+                'scheduled_at' => time(), // немедленное выполнение
                 'created_at' => time(),
                 'retries_left' => self::MAX_RETRIES,
             ],
@@ -78,15 +79,53 @@ final readonly class JobQueue
     }
 
     /**
+     * Recover stale running jobs (worker crash without completing).
+     * Вызывается на каждый claim, чтобы перехватить задачи,
+     * потерянные после раннего restart до истечения lease.
+     */
+    private function recoverStale(): void
+    {
+        $this->db->execute(
+            'UPDATE jobs
+             SET status = :pending, claimed_at = NULL
+             WHERE queue = :queue
+               AND status = :running
+               AND claimed_at < :timeout',
+            [
+                'pending' => 'pending',
+                'queue' => $this->queueName,
+                'running' => 'running',
+                'timeout' => time() - self::CLAIM_TIMEOUT,
+            ],
+        );
+
+        // Periodic TTL cleanup
+        $this->db->execute(
+            'DELETE FROM jobs
+             WHERE queue = :queue
+               AND status IN (:completed, :failed)
+               AND completed_at < :cleanup',
+            [
+                'queue' => $this->queueName,
+                'completed' => 'completed',
+                'failed' => 'failed',
+                'cleanup' => time() - self::CLEANUP_AFTER,
+            ],
+        );
+    }
+
+    /**
      * Claim the next pending job.
      *
      * Атомарно: UPDATE … WHERE … RETURNING с учётом scheduled_at.
-     * Зависшие running-задачи сбрасываются в pending на старте (в конструкторе).
+     * Зависшие running-задачи сбрасываются в pending перед каждым claim.
      *
      * @return array|null Job data or null if none available
      */
     public function claim(): ?array
     {
+        // Периодически восстанавливаем stale задачи (не только в конструкторе)
+        $this->recoverStale();
         $job = $this->db->fetch(
             'UPDATE jobs
              SET status = :running, claimed_at = :now
@@ -94,7 +133,7 @@ final readonly class JobQueue
                  SELECT id FROM jobs
                  WHERE queue = :queue
                    AND status = :pending
-                   AND scheduled_at <= :now_sched
+                   AND COALESCE(scheduled_at, 0) <= :now_sched
                  ORDER BY priority DESC, created_at ASC
                  LIMIT 1
              )

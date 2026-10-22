@@ -13,7 +13,8 @@ final readonly class InstallController
 {
     public function __construct(
         private InstallationService $installationService,
-    ) {}
+    ) {
+    }
 
     /**
      * Handle GET /install callback from InSales.
@@ -31,13 +32,18 @@ final readonly class InstallController
         try {
             $this->installationService->handleInstall($shop, $token, $insalesId);
             $response->getBody()->write('Installation received');
-            return $response->withStatus(200);
+            return $response->withStatus(200)
+                ->withHeader('Content-Type', 'text/plain; charset=utf-8');
         } catch (\InvalidArgumentException $e) {
-            $response->getBody()->write('Invalid request: ' . $e->getMessage());
-            return $response->withStatus(400);
+            $response->getBody()->write('Invalid request');
+            return $response->withStatus(400)
+                ->withHeader('Content-Type', 'text/plain; charset=utf-8')
+                ->withHeader('X-Content-Type-Options', 'nosniff');
         } catch (\Throwable $e) {
             $response->getBody()->write('Installation error');
-            return $response->withStatus(500);
+            return $response->withStatus(500)
+                ->withHeader('Content-Type', 'text/plain; charset=utf-8')
+                ->withHeader('X-Content-Type-Options', 'nosniff');
         }
     }
 }

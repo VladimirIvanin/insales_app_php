@@ -28,69 +28,86 @@ final readonly class UninstallService
         private string $appSecret,
         private array $allowedShops,
         private bool $allowHttp,
-    ) {}
+    ) {
+    }
 
     /**
      * Handle uninstall callback from InSales.
      *
      * Всегда чистит install_candidates и jobs для store_id/shop,
      * даже если строки stores ещё нет (неактивированная установка).
+     * При наличии candidate проверяет token по его credential.
      *
-     * @return bool True if uninstall was processed, false if store not found and no candidates
+     * @return bool True if uninstall was processed, false if nothing to remove (and token matches — no-op)
      * @throws \InvalidArgumentException
      */
     public function handleUninstall(string $shop, string $token, string $insalesId): bool
     {
         $shop = ShopValidator::validate($shop, $this->allowedShops, $this->allowHttp);
 
+        // Проверяем token (может быть по store или candidate)
+        // Чтение и проверка — только для авторизации, без состояния для удаления
         $store = $this->db->fetch(
             'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
             ['store_id' => $insalesId, 'shop' => $shop],
         );
 
-        $processed = true;
+        $passwordToVerify = null;
 
-        if ($store === null) {
-            $processed = false;
+        if ($store !== null) {
+            $passwordToVerify = $this->encryption->decrypt($store['encrypted_password']);
         } else {
-            $password = $this->encryption->decrypt($store['encrypted_password']);
-
-            // Compare token with store password (constant-time)
-            if (!hash_equals($password, $token)) {
-                throw new \InvalidArgumentException('Invalid uninstall token');
+            $candidate = $this->db->fetch(
+                'SELECT * FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
+                ['store_id' => $insalesId, 'shop' => $shop],
+            );
+            if ($candidate !== null) {
+                $passwordToVerify = $this->encryption->decrypt($candidate['encrypted_password']);
             }
         }
 
-        // Всегда чистим кандидатов и jobs для этого магазина,
-        // даже если stores ещё нет (неактивированная установка).
-        $this->db->transaction(function () use ($insalesId, $shop, $store) {
+        if ($passwordToVerify === null) {
+            return false;
+        }
+
+        if (!hash_equals($passwordToVerify, $token)) {
+            throw new \InvalidArgumentException('Invalid uninstall token');
+        }
+
+        // Весь cleanup — в транзакции, с перепроверкой актуального состояния
+        $processed = false;
+
+        $this->db->transaction(function () use ($insalesId, $shop, &$processed) {
+            // Перечитываем store внутри транзакции (worker мог активировать между чтением и транзакцией)
+            $store = $this->db->fetch(
+                'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
+                ['store_id' => $insalesId, 'shop' => $shop],
+            );
+
             if ($store !== null) {
-                // Invalidate sessions
+                $processed = true;
+
                 $this->db->execute(
                     'DELETE FROM sessions WHERE store_id = :store_id',
                     ['store_id' => $insalesId],
                 );
 
-                // Remove pending challenges
                 $this->db->execute(
                     'DELETE FROM pending_logins WHERE store_id = :store_id',
                     ['store_id' => $insalesId],
                 );
 
-                // Remove store credentials
                 $this->db->execute(
                     'DELETE FROM stores WHERE store_id = :store_id',
                     ['store_id' => $insalesId],
                 );
             }
 
-            // Remove install candidates for this store/shop
             $this->db->execute(
                 'DELETE FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $insalesId, 'shop' => $shop],
             );
 
-            // Fail any pending jobs for this store
             $this->db->execute(
                 "UPDATE jobs SET status = 'failed', error = :error, completed_at = :now
                  WHERE store_id = :store_id AND status = 'pending'",

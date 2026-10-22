@@ -122,10 +122,17 @@ final readonly class ContainerFactory
             );
         });
 
-        $container->set(DashboardController::class, function () use ($appId, $allowHttp) {
+        $container->set(\Psr\Log\LoggerInterface::class, function () {
+            return new \Psr\Log\NullLogger();
+        });
+
+        $container->set(DashboardController::class, function (ContainerInterface $c) use ($appId, $allowHttp) {
             return new DashboardController(
                 $appId,
                 $allowHttp,
+                $c->get(Database::class),
+                $c->get(Encryption::class),
+                $c->get(\Psr\Log\LoggerInterface::class),
             );
         });
 
@@ -151,9 +158,17 @@ final readonly class ContainerFactory
             );
         }
 
-        // Dev/test — детерминированный ключ для воспроизводимости
+        // Dev/test — детерминированный ключ (не случайный) для воспроизводимости
+        // между HTTP и worker процессами
+        trigger_error(
+            'APP_ENCRYPTION_KEY is empty in ' . $env . ' environment. '
+            . 'Set a persistent key in .env to avoid data loss between restarts. '
+            . 'Using a deterministic dev key.',
+            E_USER_WARNING,
+        );
+
         return bin2hex(
-            sodium_crypto_secretbox_keygen()
+            str_repeat("\x00", SODIUM_CRYPTO_SECRETBOX_KEYBYTES)
         );
     }
 }

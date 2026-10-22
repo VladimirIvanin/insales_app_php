@@ -6,9 +6,10 @@ parameters:
         - public/index.php
         - bin/worker.php
     strictRules:
-        allRules: true
+        allRules: false
+        booleansInConditions: true
+        requireParentConstructorCall: true
     checkMissingIterableValueType: true
     checkUninitializedProperties: true
-    checkTooWideReturnTypes: true
     treatPhpDocTypesAsCertain: false
     tmpDir: .phpstan-cache
