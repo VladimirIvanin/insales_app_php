@@ -4,100 +4,159 @@ declare(strict_types=1);
 
 namespace Tests\Simulator;
 
-use InSales\Protocol;
-
 /**
  * Lightweight HTTP simulator of the InSales platform for integration tests.
  *
- * Runs as a standalone PHP built-in server on a random localhost port.
- * Implements only the endpoints used by the application:
- * - GET /admin/account.json
- * - GET /admin/applications/{app_id}/login
- * - Unauthenticated Basic responses
+ * Runs as a standalone PHP built-in server on a random localhost port via proc_open.
+ * State (stores, nonces, scripted responses) is persisted in a JSON file
+ * with LOCK_EX, shared between parent (PHPUnit) and child (php -S router).
+ *
+ * Endpoints:
+ * - GET /admin/account.json — Basic Auth, returns account
+ * - GET /admin/applications/{appId}/login — redirect with token/token2/token3
+ * - Scripted responses via respondNext()
+ * - 404 on unknown path
  *
  * Design:
- * - Uses PHP's built-in server router script
- * - Maintains state: installed stores, passwords, rate limits
- * - Synthetic test data, no real platform dependencies
- * - Simulates errors: 401, 403, 404, 422, 429, 5xx, timeout, disconnect
+ * - proc_open with array (no shell)
+ * - Temporary docroot and state file per instance
+ * - Graceful stop() with proc_terminate + proc_close
  */
 final class PlatformSimulator
 {
     private string $host = '127.0.0.1';
     private int $port = 0;
-    private ?\Closure $router = null;
+    private string $baseUrl = '';
 
-    /** @var array<string, array{password: string, id: string, title: string}> */
-    private array $stores = [];
+    private string $stateFile;
+    private string $docroot;
 
-    /** @var array<string, string> Maps nonce => app_id for login */
-    private array $loginNonces = [];
+    /** @var resource|null */
+    private $process = null;
 
-    /** @var int Request counter for rate limiting */
-    private int $requestCount = 0;
-    private int $rateLimitMax = 500;
-    private int $rateLimitWindow = 300; // 5 minutes
-    private int $rateLimitStart = 0;
+    /** @var array<int, resource> */
+    private array $pipes = [];
 
-    private string $appId;
-    private string $appSecret;
+    private bool $running = false;
 
-    /** @var array<int, array{method: string, path: string, status: int, body: mixed, disconnect: bool, delay: int}> */
-    private array $scriptedResponses = [];
+    public function __construct(
+        private string $appId = 'test-app-id',
+        private string $appSecret = 'test-app-secret',
+    ) {}
 
-    public function __construct(string $appId = 'test-app-id', string $appSecret = 'test-app-secret')
+    public function __destruct()
     {
-        $this->appId = $appId;
-        $this->appSecret = $appSecret;
+        $this->stop();
     }
 
     /**
      * Start the simulator and return its base URL.
+     *
+     * @throws \RuntimeException
      */
     public function start(): string
     {
-        $this->port = $this->findFreePort();
-        $routerFile = $this->createRouterScript();
+        if ($this->running) {
+            return $this->baseUrl;
+        }
 
-        $cmd = sprintf(
-            'php -S %s:%d -t /tmp %s 2>/dev/null & echo $!',
-            escapeshellarg($this->host),
-            $this->port,
-            escapeshellarg($routerFile),
+        $this->port = $this->findFreePort();
+        $this->baseUrl = "http://{$this->host}:{$this->port}";
+
+        // Temporary docroot
+        $this->docroot = sys_get_temp_dir() . '/insales_sim_docroot_' . bin2hex(random_bytes(8));
+        if (!mkdir($this->docroot, 0700, true) && !is_dir($this->docroot)) {
+            throw new \RuntimeException("Cannot create docroot: {$this->docroot}");
+        }
+
+        // State file
+        $this->stateFile = sys_get_temp_dir() . '/insales_sim_state_' . bin2hex(random_bytes(8)) . '.json';
+        $this->writeState([]);
+
+        // Router path
+        $router = __DIR__ . '/router.php';
+
+        // Command as array — no shell
+        $cmd = [\PHP_BINARY, '-S', "{$this->host}:{$this->port}", '-t', $this->docroot, $router];
+
+        $env = $_ENV;
+        $env['INSALES_SIM_STATE'] = $this->stateFile;
+
+        $descriptors = [
+            0 => ['pipe', 'r'],  // stdin
+            1 => ['pipe', 'w'],  // stdout
+            2 => ['pipe', 'w'],  // stderr
+        ];
+
+        $this->process = @proc_open(
+            $cmd,
+            $descriptors,
+            $this->pipes,
+            null,
+            $env,
+            ['bypass_shell' => true],
         );
 
-        $output = [];
-        exec($cmd, $output);
-        $pid = (int) ($output[0] ?? 0);
-
-        if ($pid <= 0) {
+        if ($this->process === false || !is_resource($this->process)) {
+            $this->cleanup();
             throw new \RuntimeException('Failed to start platform simulator');
         }
 
-        // Wait for server to start
-        $maxWait = 10;
+        // Close stdin immediately
+        fclose($this->pipes[0]);
+        unset($this->pipes[0]);
+
+        // Wait for server to be ready
+        $maxWait = 20;
         for ($i = 0; $i < $maxWait; $i++) {
             $fp = @fsockopen($this->host, $this->port, $errno, $errstr, 1);
             if ($fp) {
                 fclose($fp);
-                break;
+                $this->running = true;
+                return $this->baseUrl;
             }
-            usleep(100_000);
+            usleep(150_000);
         }
 
-        register_shutdown_function(function () use ($pid) {
-            @exec("kill {$pid} 2>/dev/null");
-        });
-
-        return $this->getBaseUrl();
+        // Timeout — capture stderr
+        $stderr = stream_get_contents($this->pipes[2]);
+        $this->stop();
+        throw new \RuntimeException(
+            'Simulator failed to start: ' . ($stderr !== false ? trim($stderr) : 'unknown error')
+        );
     }
 
     /**
-     * Stop the simulator.
+     * Stop the simulator and clean up resources.
      */
     public function stop(): void
     {
-        // The shutdown function handles cleanup
+        if (is_resource($this->process)) {
+            // Close pipes
+            foreach ($this->pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
+                }
+            }
+            $this->pipes = [];
+
+            proc_terminate($this->process, \SIGTERM);
+
+            // Give it time to shut down
+            for ($i = 0; $i < 5; $i++) {
+                $status = @proc_get_status($this->process);
+                if ($status === false || !$status['running']) {
+                    break;
+                }
+                usleep(100_000);
+            }
+
+            proc_close($this->process);
+            $this->process = null;
+        }
+
+        $this->cleanup();
+        $this->running = false;
     }
 
     /**
@@ -105,7 +164,10 @@ final class PlatformSimulator
      */
     public function getBaseUrl(): string
     {
-        return "http://{$this->host}:{$this->port}";
+        if (!$this->running) {
+            throw new \RuntimeException('Simulator not started');
+        }
+        return $this->baseUrl;
     }
 
     /**
@@ -113,11 +175,13 @@ final class PlatformSimulator
      */
     public function addStore(string $shop, string $password, string $storeId, string $title = 'Test Store'): void
     {
-        $this->stores[$shop] = [
+        $state = $this->readState();
+        $state['stores'][$shop] = [
             'password' => $password,
             'id' => $storeId,
             'title' => $title,
         ];
+        $this->writeState($state);
     }
 
     /**
@@ -125,7 +189,9 @@ final class PlatformSimulator
      */
     public function removeStore(string $shop): void
     {
-        unset($this->stores[$shop]);
+        $state = $this->readState();
+        unset($state['stores'][$shop]);
+        $this->writeState($state);
     }
 
     /**
@@ -133,18 +199,25 @@ final class PlatformSimulator
      */
     public function addLoginNonce(string $nonce, string $appId): void
     {
-        $this->loginNonces[$nonce] = $appId;
+        $state = $this->readState();
+        $state['login_nonces'][$nonce] = ['app_id' => $appId, 'timestamp' => time()];
+        $this->writeState($state);
     }
 
     /**
-     * Clear all installed stores.
+     * Clear all state.
      */
     public function reset(): void
     {
-        $this->stores = [];
-        $this->loginNonces = [];
-        $this->scriptedResponses = [];
-        $this->requestCount = 0;
+        $state = [
+            'stores' => [],
+            'login_nonces' => [],
+            'scripted_responses' => [],
+            'request_count' => 0,
+            'rate_limit_start' => time(),
+            'rate_limit_max' => 500,
+        ];
+        $this->writeState($state);
     }
 
     /**
@@ -157,7 +230,8 @@ final class PlatformSimulator
      */
     public function respondNext(string $method, string $path, int $status = 200, mixed $body = null, bool $disconnect = false, int $delay = 0): void
     {
-        $this->scriptedResponses[] = [
+        $state = $this->readState();
+        $state['scripted_responses'][] = [
             'method' => $method,
             'path' => $path,
             'status' => $status,
@@ -165,6 +239,7 @@ final class PlatformSimulator
             'disconnect' => $disconnect,
             'delay' => $delay,
         ];
+        $this->writeState($state);
     }
 
     /**
@@ -172,7 +247,9 @@ final class PlatformSimulator
      */
     public function advance(int $seconds): void
     {
-        $this->rateLimitStart -= $seconds;
+        $state = $this->readState();
+        $state['rate_limit_start'] = ($state['rate_limit_start'] ?? time()) - $seconds;
+        $this->writeState($state);
     }
 
     /**
@@ -183,225 +260,110 @@ final class PlatformSimulator
         return $this->port;
     }
 
+    // ---------------------------------------------------------------
+    // Internal helpers
+    // ---------------------------------------------------------------
+
     /**
-     * Create the router script for PHP built-in server.
+     * Read state from JSON file with shared lock.
      */
-    private function createRouterScript(): string
+    private function readState(): array
     {
-        $simulatorData = serialize([
-            'stores' => &$this->stores,
-            'loginNonces' => &$this->loginNonces,
-            'scriptedResponses' => &$this->scriptedResponses,
-            'requestCount' => &$this->requestCount,
-            'rateLimitMax' => $this->rateLimitMax,
-            'rateLimitStart' => &$this->rateLimitStart,
-            'appId' => $this->appId,
-            'appSecret' => $this->appSecret,
-        ]);
-
-        $code = <<<'PHP'
-<?php
-// Platform simulator router
-
-// The state is passed via environment as serialized data
-// For simplicity, we use a shared file-based approach
-$stateFile = sys_get_temp_dir() . '/insales_sim_state_' . getmypid() . '.json';
-
-$method = $_SERVER['REQUEST_METHOD'];
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$query = $_GET;
-
-$appId = $query['app_id'] ?? 'test-app-id';
-
-// Load state
-$state = [];
-if (file_exists($stateFile)) {
-    $state = json_decode(file_get_contents($stateFile), true) ?: [];
-}
-
-// Rate limiting
-$now = time();
-if (!isset($state['rate_limit_start'])) {
-    $state['rate_limit_start'] = $now;
-}
-if (!isset($state['request_count'])) {
-    $state['request_count'] = 0;
-}
-
-// Reset window if expired
-if ($now - $state['rate_limit_start'] > 300) {
-    $state['rate_limit_start'] = $now;
-    $state['request_count'] = 0;
-}
-
-$state['request_count']++;
-$usage = sprintf('%d/%d', $state['request_count'], $state['rate_limit_max'] ?? 500);
-
-// Check scripted responses
-if (!empty($state['scripted_responses'])) {
-    $scripted = $state['scripted_responses'][0];
-    if ($scripted['method'] === $method && $scripted['path'] === $uri) {
-        array_shift($state['scripted_responses']);
-        file_put_contents($stateFile, json_encode($state));
-
-        if (!empty($scripted['delay'])) {
-            usleep($scripted['delay'] * 1000);
-        }
-        if (!empty($scripted['disconnect'])) {
-            http_response_code(500);
-            exit;
+        if ($this->stateFile === '' || !file_exists($this->stateFile)) {
+            return $this->defaultState();
         }
 
-        http_response_code($scripted['status']);
-        header('API-Usage-Limit: ' . $usage);
-        if ($scripted['status'] === 429) {
-            header('Retry-After: 10');
+        $fp = @fopen($this->stateFile, 'rb');
+        if ($fp === false) {
+            return $this->defaultState();
         }
-        header('Content-Type: application/json');
-        if ($scripted['body'] !== null) {
-            echo json_encode($scripted['body']);
-        }
-        exit;
-    }
-}
+        flock($fp, \LOCK_SH);
+        $content = stream_get_contents($fp);
+        flock($fp, \LOCK_UN);
+        fclose($fp);
 
-// Handle routes
-header('API-Usage-Limit: ' . $usage);
-
-if ($uri === '/admin/account.json' && $method === 'GET') {
-    // Basic Auth check
-    $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-    if ($auth === '' && function_exists('apache_request_headers')) {
-        $headers = apache_request_headers();
-        $auth = $headers['Authorization'] ?? '';
-    }
-    if ($auth === '') {
-        $auth = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
-    }
-
-    if (!preg_match('/^Basic\s+(.+)$/i', $auth, $m)) {
-        http_response_code(401);
-        echo json_encode(['error' => 'Authorization required']);
-        file_put_contents($stateFile, json_encode($state));
-        exit;
-    }
-
-    $decoded = base64_decode($m[1]);
-    if ($decoded === false || !str_contains($decoded, ':')) {
-        http_response_code(401);
-        echo json_encode(['error' => 'Invalid authorization']);
-        file_put_contents($stateFile, json_encode($state));
-        exit;
-    }
-
-    [$username, $password] = explode(':', $decoded, 2);
-
-    // Find store by password
-    $store = null;
-    foreach (($state['stores'] ?? []) as $shop => $info) {
-        if ($info['password'] === $password) {
-            $store = $info;
-            $store['shop'] = $shop;
-            break;
-        }
-    }
-
-    if ($store === null) {
-        http_response_code(401);
-        echo json_encode(['error' => 'Invalid password']);
-        file_put_contents($stateFile, json_encode($state));
-        exit;
-    }
-
-    http_response_code(200);
-    echo json_encode([
-        'id' => (int) $store['id'],
-        'title' => $store['title'],
-        'shop' => $store['shop'],
-    ]);
-    file_put_contents($stateFile, json_encode($state));
-    exit;
-}
-
-// Login redirect: GET /admin/applications/{app_id}/login?token=NONCE&login=URL
-if (preg_match('#^/admin/applications/([^/]+)/login$#', $uri, $m) && $method === 'GET') {
-    $appId = $m[1];
-    $nonce = $query['token'] ?? '';
-    $loginUrl = $query['login'] ?? '';
-
-    if ($nonce === '' || $loginUrl === '') {
-        http_response_code(400);
-        echo json_encode(['error' => 'Missing token or login']);
-        file_put_contents($stateFile, json_encode($state));
-        exit;
-    }
-
-    // Store nonce for verification
-    $state['login_nonces'][$nonce] = ['app_id' => $appId, 'timestamp' => time()];
-    file_put_contents($stateFile, json_encode($state));
-
-    // Simulate redirect back to application with user info
-    $password = '';
-    foreach (($state['stores'] ?? []) as $shop => $info) {
-        // We need the password to sign token3
-        $password = $info['password'];
-    }
-
-    if ($password === '') {
-        http_response_code(403);
-        echo json_encode(['error' => 'Store not found']);
-        file_put_contents($stateFile, json_encode($state));
-        exit;
-    }
-
-    $userEmail = $query['user_email'] ?? 'admin@example.com';
-    $userName = $query['user_name'] ?? 'Test Admin';
-    $userId = $query['user_id'] ?? '1';
-    $emailConfirmed = $query['email_confirmed'] ?? 'true';
-
-    $token3 = md5($nonce . $userEmail . $userName . $userId . $emailConfirmed . $password);
-
-    $separator = (parse_url($loginUrl, PHP_URL_QUERY) ? '&' : '?');
-    $redirectUrl = $loginUrl . $separator . http_build_query([
-        'token' => md5($nonce . $password),
-        'token2' => md5($nonce . $userEmail . $userName . $userId . $password),
-        'token3' => $token3,
-        'user_email' => $userEmail,
-        'user_name' => $userName,
-        'user_id' => $userId,
-        'email_confirmed' => $emailConfirmed,
-    ]);
-
-    http_response_code(302);
-    header('Location: ' . $redirectUrl);
-    file_put_contents($stateFile, json_encode($state));
-    exit;
-}
-
-// 404 for unknown routes
-http_response_code(404);
-echo json_encode(['error' => 'Not found']);
-file_put_contents($stateFile, json_encode($state));
-PHP;
-
-        $file = tempnam(sys_get_temp_dir(), 'insales_sim_') . '.php';
-        file_put_contents($file, $code);
-
-        return $file;
+        $state = $content !== false ? json_decode($content, true) : null;
+        return is_array($state) ? $state : $this->defaultState();
     }
 
     /**
-     * Find a free TCP port.
+     * Write state to JSON file with exclusive lock.
+     */
+    private function writeState(array $state): void
+    {
+        if ($this->stateFile === '') {
+            return;
+        }
+
+        $fp = @fopen($this->stateFile, 'cb');
+        if ($fp === false) {
+            return;
+        }
+        flock($fp, \LOCK_EX);
+        ftruncate($fp, 0);
+        fwrite($fp, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        fflush($fp);
+        flock($fp, \LOCK_UN);
+        fclose($fp);
+    }
+
+    private function defaultState(): array
+    {
+        return [
+            'stores' => [],
+            'login_nonces' => [],
+            'scripted_responses' => [],
+            'request_count' => 0,
+            'rate_limit_start' => time(),
+            'rate_limit_max' => 500,
+            'app_id' => $this->appId,
+            'app_secret' => $this->appSecret,
+        ];
+    }
+
+    /**
+     * Clean up temp files.
+     */
+    private function cleanup(): void
+    {
+        if ($this->stateFile !== '' && file_exists($this->stateFile)) {
+            @unlink($this->stateFile);
+        }
+        if ($this->docroot !== '' && is_dir($this->docroot)) {
+            @rmdir($this->docroot);
+        }
+    }
+
+    /**
+     * Find a free TCP port by binding to port 0.
      */
     private function findFreePort(): int
     {
-        $sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-        if ($sock === false) {
-            throw new \RuntimeException('Cannot create socket');
+        $maxAttempts = 3;
+
+        for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
+            $sock = @socket_create(\AF_INET, \SOCK_STREAM, \SOL_TCP);
+            if ($sock === false) {
+                throw new \RuntimeException('Cannot create socket: ' . socket_strerror(socket_last_error()));
+            }
+
+            if (@socket_bind($sock, '127.0.0.1', 0) === false) {
+                socket_close($sock);
+                continue;
+            }
+
+            if (@socket_getsockname($sock, $addr, $port) === false) {
+                socket_close($sock);
+                continue;
+            }
+
+            socket_close($sock);
+
+            if ($port > 0) {
+                return $port;
+            }
         }
-        socket_bind($sock, '127.0.0.1', 0);
-        socket_getsockname($sock, $addr, $port);
-        socket_close($sock);
-        return $port;
+
+        throw new \RuntimeException('Cannot find a free TCP port after ' . $maxAttempts . ' attempts');
     }
 }

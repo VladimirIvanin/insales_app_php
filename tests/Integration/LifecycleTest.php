@@ -80,6 +80,7 @@ final class LifecycleTest extends TestCase
             $this->appId,
             ['test.myshop.ru', '127.0.0.1'],
             true, // allow HTTP for test
+            self::$simulatorUrl,
         );
 
         $this->loginService = new LoginService(
@@ -87,6 +88,7 @@ final class LifecycleTest extends TestCase
             self::$encryption,
             $this->appId,
             'http://127.0.0.1:18765',
+            self::$simulatorUrl,
         );
 
         $this->uninstallService = new UninstallService(
@@ -133,9 +135,48 @@ final class LifecycleTest extends TestCase
         $this->assertNotEmpty($loginResult['nonce']);
         $this->assertNotEmpty($loginResult['sessionId']);
         $this->assertStringContainsString('/admin/applications/', $loginResult['redirectUrl']);
+        $this->assertStringStartsWith(self::$simulatorUrl, $loginResult['redirectUrl'],
+            'redirectUrl должен начинаться с URL симулятора');
 
-        // 5. Simulate autologin callback
+        // 5. Расшифровываем пароль для проверок
         $decryptedPassword = self::$encryption->decrypt($store['encrypted_password']);
+
+        // 6. Выполняем HTTP-запрос редиректа к симулятору и сверяем token3
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $loginResult['redirectUrl'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+            CURLOPT_NOBODY => false,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT => 5,
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $redirectUrl = curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+        curl_close($ch);
+
+        $this->assertSame(302, $httpCode, 'Симулятор должен ответить 302');
+        $this->assertNotNull($redirectUrl, 'Должен быть редирект');
+
+        $redirectParts = [];
+        parse_str(parse_url($redirectUrl, PHP_URL_QUERY), $redirectParts);
+
+        $this->assertArrayHasKey('token3', $redirectParts);
+        $this->assertArrayHasKey('user_email', $redirectParts);
+
+        $expectedToken3FromRedirect = Protocol::token3(
+            $loginResult['nonce'],
+            $redirectParts['user_email'],
+            $redirectParts['user_name'] ?? '',
+            $redirectParts['user_id'] ?? '',
+            $redirectParts['email_confirmed'] ?? 'true',
+            $decryptedPassword,
+        );
+        $this->assertSame($expectedToken3FromRedirect, $redirectParts['token3'],
+            'token3 из редиректа симулятора должен совпадать с Protocol::token3');
+
+        // 7. Simulate autologin callback
         $expectedToken3 = Protocol::token3(
             $loginResult['nonce'],
             'admin@example.com',
@@ -159,21 +200,21 @@ final class LifecycleTest extends TestCase
         $this->assertNotEmpty($authResult['authToken']);
         $this->assertSame($storeId, $authResult['storeId']);
 
-        // 6. Validate session
+        // 7. Validate session
         $session = $this->loginService->validateSession($authResult['authToken']);
         $this->assertNotNull($session);
         $this->assertSame($storeId, $session['store_id']);
         $this->assertSame($shop, $session['shop']);
 
-        // 7. Uninstall
+        // 8. Uninstall
         $uninstalled = $this->uninstallService->handleUninstall($shop, $decryptedPassword, $storeId);
         $this->assertTrue($uninstalled);
 
-        // 8. Verify store is gone
+        // 9. Verify store is gone
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertNull($store);
 
-        // 9. Session invalidated
+        // 10. Session invalidated
         $session = $this->loginService->validateSession($authResult['authToken']);
         $this->assertNull($session);
     }

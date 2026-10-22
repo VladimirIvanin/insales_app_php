@@ -36,6 +36,7 @@ final readonly class InstallationService
         private string $appId,
         private array $allowedShops,
         private bool $allowHttp,
+        private ?string $platformBaseUrl = null,
     ) {}
 
     /**
@@ -112,6 +113,7 @@ final readonly class InstallationService
                 password: $password,
                 allowHttp: $this->allowHttp,
                 logger: new NullLogger(),
+                platformBaseUrl: $this->platformBaseUrl,
             );
 
             $account = $client->getAccount();

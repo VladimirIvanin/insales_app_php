@@ -45,6 +45,7 @@ final readonly class ApiClient
         private bool $allowHttp = false,
         ?ClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        private ?string $platformBaseUrl = null,
     ) {
         $this->httpClient = $httpClient ?? new Client([
             RequestOptions::TIMEOUT => self::REQUEST_TIMEOUT,
@@ -276,9 +277,9 @@ final readonly class ApiClient
     /**
      * Verify the destination hostname resolves to a public IP.
      *
-     * - Loopback разрешён только с флагом allowHttp
-     * - Приватные/метаданные адреса блокируются
-     * - DNS резолв перед соединением: отбрасываем частные и loopback A/AAAA записи
+     * Если задан platformBaseUrl (тест/симулятор), проверка назначения
+     * применяется к его хосту: разрешены только loopback localhost/127.0.0.1.
+     * Без platformBaseUrl — полный DNS-резолв и блокировка приватных сетей.
      *
      * @throws ApiException
      */
@@ -286,6 +287,17 @@ final readonly class ApiClient
     {
         $parsed = ShopValidator::parse($this->shop);
         $host = $parsed['host'];
+
+        // Режим симулятора: платформа на loopback
+        if ($this->platformBaseUrl !== null) {
+            $parts = parse_url($this->platformBaseUrl);
+            $simHost = $parts['host'] ?? '';
+
+            if (!ShopValidator::isLoopback($simHost)) {
+                throw new ApiException(0, "SSRF: simulator host {$simHost} is not loopback");
+            }
+            return;
+        }
 
         // Allow loopback only when explicitly enabled (test mode)
         if (ShopValidator::isLoopback($host)) {
@@ -300,7 +312,6 @@ final readonly class ApiClient
             '169.254.169.254', // AWS/GCP/Azure metadata
             'metadata.google.internal',
             '100.100.100.200', // Alibaba
-            'metadata.google.internal',
         ];
 
         if (\in_array(mb_strtolower($host), $blocked, true)) {
@@ -310,7 +321,6 @@ final readonly class ApiClient
         // DNS resolve: check for private/loopback IPs
         $ips = @dns_get_record($host, \DNS_A | \DNS_AAAA);
         if ($ips === false || $ips === []) {
-            // DNS failure — let the connection fail naturally
             $this->logger->warning('DNS resolution failed for host', ['host' => $host]);
             return;
         }
@@ -362,6 +372,11 @@ final readonly class ApiClient
 
     private function buildUrl(string $path): string
     {
+        if ($this->platformBaseUrl !== null) {
+            // Режим симулятора: URL полностью из platformBaseUrl + path
+            return rtrim($this->platformBaseUrl, '/') . '/' . ltrim($path, '/');
+        }
+
         $parsed = ShopValidator::parse($this->shop);
         $scheme = ($this->allowHttp && ShopValidator::isLoopback($parsed['host'])) ? 'http' : 'https';
         $host = $parsed['host'];

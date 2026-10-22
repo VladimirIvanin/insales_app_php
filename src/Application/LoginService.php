@@ -31,6 +31,7 @@ final readonly class LoginService
         private Encryption $encryption,
         private string $appId,
         private string $baseUrl,
+        private ?string $platformBaseUrl = null,
     ) {}
 
     /**
@@ -65,9 +66,11 @@ final readonly class LoginService
             ],
         );
 
+        $host = $this->platformBaseUrl ?? sprintf('https://%s', $shop);
+
         $redirectUrl = sprintf(
-            'https://%s/admin/applications/%s/login?token=%s&login=%s',
-            $shop,
+            '%s/admin/applications/%s/login?token=%s&login=%s',
+            $host,
             rawurlencode($this->appId),
             rawurlencode($nonce),
             rawurlencode($this->baseUrl . '/autologin'),
