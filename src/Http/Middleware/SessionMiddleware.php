@@ -19,7 +19,9 @@ use Psr\Http\Server\RequestHandlerInterface;
 final readonly class SessionMiddleware implements MiddlewareInterface
 {
     public const COOKIE_NAME = 'insales_app_session';
+    public const CHALLENGE_COOKIE = 'insales_app_challenge';
     private const COOKIE_TTL = 3600;
+    private const CHALLENGE_TTL = 300; // 5 min, matches LoginService::NONCE_TTL
 
     public function __construct(
         private LoginService $loginService,
@@ -68,14 +70,53 @@ final readonly class SessionMiddleware implements MiddlewareInterface
      */
     public function setSessionCookie(ResponseInterface $response, string $sessionId): ResponseInterface
     {
-        $secure = str_starts_with($this->baseUrl, 'https://');
-        $sameSite = 'Lax';
+        return $this->setCookie($response, self::COOKIE_NAME, $sessionId, self::COOKIE_TTL);
+    }
 
-        $cookieValue = rawurlencode(self::COOKIE_NAME) . '=' . rawurlencode($sessionId)
+    /**
+     * Set challenge cookie on response (for login flow).
+     */
+    public function setChallengeCookie(ResponseInterface $response, string $sessionId): ResponseInterface
+    {
+        return $this->setCookie($response, self::CHALLENGE_COOKIE, $sessionId, self::CHALLENGE_TTL);
+    }
+
+    /**
+     * Clear session cookie.
+     */
+    public function clearSessionCookie(ResponseInterface $response): ResponseInterface
+    {
+        return $this->clearCookie($response, self::COOKIE_NAME);
+    }
+
+    /**
+     * Clear challenge cookie.
+     */
+    public function clearChallengeCookie(ResponseInterface $response): ResponseInterface
+    {
+        return $this->clearCookie($response, self::CHALLENGE_COOKIE);
+    }
+
+    /**
+     * Combine clearing both challenge and session cookies.
+     */
+    public function clearAllCookies(ResponseInterface $response): ResponseInterface
+    {
+        $response = $this->clearCookie($response, self::COOKIE_NAME);
+        return $this->clearCookie($response, self::CHALLENGE_COOKIE);
+    }
+
+    /**
+     * Set a cookie with given name, value and TTL.
+     */
+    private function setCookie(ResponseInterface $response, string $name, string $value, int $ttl): ResponseInterface
+    {
+        $secure = str_starts_with($this->baseUrl, 'https://');
+        $cookieValue = rawurlencode($name) . '=' . rawurlencode($value)
             . '; HttpOnly'
-            . '; SameSite=' . $sameSite
+            . '; SameSite=Lax'
             . '; Path=/'
-            . '; Max-Age=' . self::COOKIE_TTL;
+            . '; Max-Age=' . $ttl;
 
         if ($secure) {
             $cookieValue .= '; Secure';
@@ -85,12 +126,11 @@ final readonly class SessionMiddleware implements MiddlewareInterface
     }
 
     /**
-     * Clear session cookie.
+     * Clear a cookie by name.
      */
-    public function clearSessionCookie(ResponseInterface $response): ResponseInterface
+    private function clearCookie(ResponseInterface $response, string $name): ResponseInterface
     {
-        $cookieValue = rawurlencode(self::COOKIE_NAME) . '=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0';
-
+        $cookieValue = rawurlencode($name) . '=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0';
         return $response->withHeader('Set-Cookie', $cookieValue);
     }
 }

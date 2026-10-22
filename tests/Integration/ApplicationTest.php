@@ -6,7 +6,6 @@ namespace Tests\Integration;
 
 use Infrastructure\SlimAppFactory;
 use Infrastructure\Database;
-use Infrastructure\JobQueue;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
@@ -208,64 +207,34 @@ final class ApplicationTest extends TestCase
         $this->assertSame(500, $response->getStatusCode());
     }
 
-    #[TestDox('install creates verify_install job with store_id')]
-    public function testInstallCreatesJobWithStoreId(): void
+    #[TestDox('install stores candidate without creating job')]
+    public function testInstallWithoutJob(): void
     {
         $response = $this->request('GET', '/install', [
             'shop' => 'test.myshop.ru',
-            'token' => 'job-test-token',
+            'token' => 'no-job-token',
             'insales_id' => '11111',
         ]);
         $this->assertSame(200, $response->getStatusCode());
 
-        // Проверяем, что задача создана с store_id
-        $jobs = $this->db->fetchAll(
-            "SELECT * FROM jobs WHERE store_id = :sid AND type = 'verify_install' AND status = 'pending'",
+        // Проверяем, что кандидат создан
+        $candidates = $this->db->fetchAll(
+            'SELECT * FROM install_candidates WHERE store_id = :sid',
             ['sid' => '11111'],
         );
-        $this->assertCount(1, $jobs);
-        $this->assertSame('11111', $jobs[0]['store_id']);
+        $this->assertCount(1, $candidates);
+        $this->assertSame('11111', $candidates[0]['store_id']);
 
-        // Проверяем payload
-        $payload = json_decode((string) $jobs[0]['payload'], true);
-        $this->assertArrayHasKey('store_id', $payload);
-        $this->assertSame('11111', $payload['store_id']);
-        $this->assertArrayHasKey('generation', $payload);
-        $this->assertSame(1, $payload['generation']);
-    }
-
-    #[TestDox('cancelByStoreId removes pending and running jobs')]
-    public function testCancelJobsByStoreId(): void
-    {
-        // Создаём несколько задач для разных магазинов
-        $this->request('GET', '/install', [
-            'shop' => 'test.myshop.ru',
-            'token' => 'cancel-token-1',
-            'insales_id' => '22222',
-        ]);
-
-        $this->request('GET', '/install', [
-            'shop' => 'test.myshop.ru',
-            'token' => 'cancel-token-2',
-            'insales_id' => '33333',
-        ]);
-
-        $queue = $this->app->getContainer()->get(JobQueue::class);
-        $queue->cancelByStoreId('22222');
-
-        // Jobs for store 22222 should be removed
-        $jobs1 = $this->db->fetchAll(
-            "SELECT * FROM jobs WHERE store_id = :sid",
-            ['sid' => '22222'],
-        );
-        $this->assertCount(0, $jobs1);
-
-        // Jobs for store 33333 should still exist
-        $jobs2 = $this->db->fetchAll(
-            "SELECT * FROM jobs WHERE store_id = :sid",
-            ['sid' => '33333'],
-        );
-        $this->assertCount(1, $jobs2);
+        // Проверяем, что jobs не созданы (нет worker)
+        $hasJobsTable = false;
+        try {
+            $jobs = $this->db->fetchAll('SELECT COUNT(*) as c FROM jobs');
+            $hasJobsTable = true;
+            $this->assertSame(0, (int) $jobs[0]['c']);
+        } catch (\PDOException) {
+            // jobs table may not exist yet in test setup — acceptable
+            $this->assertFalse($hasJobsTable, 'jobs table should not be queried');
+        }
     }
 
     /**

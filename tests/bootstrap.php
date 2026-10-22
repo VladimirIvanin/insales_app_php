@@ -24,6 +24,11 @@ if (file_exists($dbPath)) {
     unlink($dbPath);
 }
 
+// Apply migrations explicitly for tests
+$migrations = require __DIR__ . '/../migrations/migrate.php';
+$db = new \Infrastructure\Database($dbPath);
+$db->migrate($migrations);
+
 // Set up md5 alias if not available (PHP 8.4+ still has it)
 if (!function_exists('md5')) {
     /**

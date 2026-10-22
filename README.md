@@ -4,6 +4,7 @@
 
 **Архитектура:** Slim 4 + Guzzle + PDO/SQLite + PHP-DI.
 **Протокол:** классический install / autologin / uninstall.
+**Проверка установки:** синхронно при первом входе сотрудника; отдельный worker и очередь не требуются.
 
 > **Статус:** заготовка для разработки. Не является production-ready решением без
 > аудита безопасности, замены SQLite на промышленную БД и настройки HTTPS.
@@ -15,9 +16,8 @@
 ### Требования
 
 - PHP 8.4+
-- Расширения: `ext-pdo`, `ext-pdo_sqlite`, `ext-sodium`, `ext-mbstring`, `ext-pcntl`, `ext-sockets`, `ext-curl`
+- Расширения: `ext-pdo`, `ext-pdo_sqlite`, `ext-sodium`, `ext-mbstring`, `ext-curl`
 - Composer 2
-- Git
 
 ### Установка
 
@@ -33,26 +33,17 @@ cp .env.example .env
 |---|---|
 | `INSALES_APP_ID` | Идентификатор приложения из кабинета InSales |
 | `INSALES_APP_SECRET` | Секрет приложения из кабинета InSales |
-| `APP_BASE_URL` | Публичный URL приложения (например, `https://myapp.example`) |
+| `APP_BASE_URL` | Публичный URL приложения (например, `https://myapp.example` или `http://127.0.0.1:8765`) |
 | `ALLOWED_SHOPS` | Список разрешённых доменов магазинов через запятую |
-| `APP_ENCRYPTION_KEY` | 64-символьный hex-ключ (32 байта). **Сгенерируйте:** `php -r 'echo bin2hex(sodium_crypto_secretbox_keygen());'` |
-| `APP_DB_PATH` | Путь к SQLite-файлу (по умолчанию `runtime/app.sqlite3`) |
+| `APP_ENCRYPTION_KEY` | 64-символьный hex-ключ (32 байта). **Обязателен в production.** Сгенерируйте: `php -r 'echo bin2hex(sodium_crypto_secretbox_keygen());'` |
+| `APP_DB_PATH` | Путь к SQLite-файлу (по умолчанию `runtime/app.sqlite3`, относительно корня проекта) |
 
-Установите зависимости:
+Установите зависимости, выполните миграции и запустите приложение:
 
 ```bash
 composer install
-```
-
-Запустите миграции и приложение:
-
-```bash
-# Миграции применяются автоматически при первом запуске.
-# Для ручного запуска worker:
-php bin/worker.php &
-
-# Запуск встроенного сервера:
-php -S 127.0.0.1:8765 -t public public/index.php
+php bin/app.php db upgrade
+php -S 127.0.0.1:8765 -t public
 ```
 
 ### Проверка здоровья
@@ -60,6 +51,13 @@ php -S 127.0.0.1:8765 -t public public/index.php
 ```bash
 curl http://127.0.0.1:8765/health
 # → ok
+```
+
+### Диагностика
+
+```bash
+php bin/app.php doctor
+php bin/app.php doctor --check-api   # С HTTP-запросами к магазинам
 ```
 
 ---
@@ -79,10 +77,6 @@ curl http://127.0.0.1:8765/health
 
 3. Скопируйте **идентификатор** и **секрет** в `.env`.
 
-После установки приложения на магазин, InSales вызовет `/install`, приложение
-сохранит кандидата, ответит 200 и асинхронно проверит доступ к API магазина.
-При успешной проверке подключение активируется.
-
 ---
 
 ## Жизненный цикл приложения
@@ -91,71 +85,93 @@ curl http://127.0.0.1:8765/health
 sequenceDiagram
     participant InSales
     participant App
-    participant Worker
     participant DB
 
+    Note over InSales,App: Установка
+
     InSales->>App: GET /install?shop=&token=&insales_id=
-    App->>DB: Сохранить кандидата
-    App->>Worker: Поставить задачу verify_install
-    App-->>InSales: 200 OK
+    App->>DB: Сохранить кандидата + поколение
+    App-->>InSales: 200 OK (без API-запроса)
 
-    Worker->>DB: Забрать задачу
-    Worker->>InSales: GET /admin/account.json (Basic Auth)
-    InSales-->>Worker: account object
-    Worker->>DB: Активировать подключение
+    Note over InSales,App: Первый вход (проверка установки)
 
-    Note over App,InSales: Вход сотрудника
-
-    App->>DB: Создать nonce
+    InSales->>App: GET /login?shop=&insales_id=
+    App->>DB: Найти непроверенного кандидата
+    App->>InSales: GET /admin/account.json (Basic Auth)
+    InSales-->>App: account object
+    App->>DB: Атомарно: активировать + отозвать старые сессии
+    App->>App: Создать challenge (nonce)
     App-->>InSales: Redirect на /admin/applications/{id}/login
+
+    Note over InSales,App: Token3-вход
+
     InSales->>App: GET /autologin?token3=&user_email=&...
     App->>App: Проверить token3 (hash_equals)
-    App->>DB: Создать сессию
-    App-->>Browser: Set-Cookie + Redirect на /
+    App->>DB: Потребить challenge + создать сессию
+    App-->>Browser: Set-Cookie session + Redirect
 
-    Note over App,InSales: Удаление
+    Note over InSales,App: Удаление
 
     InSales->>App: GET /uninstall?shop=&token=&insales_id=
-    App->>App: Сверить пароль (hash_equals)
-    App->>DB: Удалить всё (транзакция)
+    App->>DB: Сверить пароль (hash_equals), атомарно удалить
     App-->>InSales: 200 OK
 ```
 
-### Установка
+### Установка (`GET /install`)
 
-InSales вызывает `GET /install?shop=SHOP&token=TOKEN&insales_id=ID`.
+InSales вызывает callback. Приложение **не обращается к API** на этом этапе:
+- Проверяет параметры и подпись `MD5(token + app_secret)`
+- Сохраняет непроверенный кандидат в транзакции (до 5 кандидатов на магазин)
+- Отвечает `200` в пределах 10 секунд
 
-Пароль магазина: `MD5(token + secret)` (нижний регистр, hex, без разделителя).
+Повтор того же callback до активации не расходует квоту. Повтор после активации не меняет поколение.
 
-Приложение должно ответить **200 за 10 секунд**. Долгие операции выносятся в
-фоновый worker. Действующее подключение не заменяется, пока новое не проверено.
+### Первый вход и проверка (`GET /login`)
 
-### Вход
+Перед созданием nonce приложение:
+1. Находит самый новый непроверенный кандидат для данного магазина
+2. Выполняет **один** `GET /admin/account.json` с credentials кандидата (без retry)
+3. При успехе — атомарно активирует подключение, отзывает старые сессии
+4. При временной ошибке — сохраняет кандидат; страница входа показывает `503`
+5. При неверных credentials — отклоняет только этот кандидат
 
-1. `GET /login?shop=SHOP&insales_id=ID` — создаёт одноразовый nonce (TTL 5 мин),
-   связанный с браузером и магазином. Перенаправляет браузер в InSales.
-2. InSales вызывает `GET /autologin?token3=...&user_email=...&...`.
-   Проверяется подпись `token3` через `hash_equals`.
-   После успеха создаётся серверная сессия (HttpOnly cookie).
+Если кандидатов нет, а активное подключение есть — вход проходит без API-запроса.
 
-Формула: `token3 = MD5(nonce + user_email + user_name + user_id + email_confirmed + password)`
+### Token3 и сессия (`GET /autologin`, `POST /logout`)
 
+Формула `token3 = MD5(nonce + user_email + user_name + user_id + email_confirmed + password)`.
 Поля конкатенируются без разделителя, UTF-8. `email_confirmed` — строка `"true"` или `"false"`.
 
-### Удаление
+- Challenge одноразовый, привязан к браузеру, магазину, поколению установки и TTL (5 мин)
+- Cookie challenge (`insales_app_challenge`) отделена от cookie сессии (`insales_app_session`)
+- `POST /logout` отзывает только текущую сессию
 
-InSales вызывает `GET /uninstall?shop=SHOP&token=PASSWORD&insales_id=ID`.
-Параметр `token` — **пароль магазина** (не install token, не secret).
-Сравнение через `hash_equals`. Атомарное удаление в транзакции.
+### Удаление (`GET /uninstall`)
+
+InSales вызывает callback. Параметр `token` — **пароль магазина** (не install token, не secret).
+Сравнение через `hash_equals`. Атомарное удаление в транзакции:
+- Удаляются все совпадающие credentials, сессии, challenge и поколения
+- Повтор удаления отсутствующего подключения — идемпотентный no-op (`200`)
 
 ---
 
-## Разработка
-
-### Команды
+## CLI
 
 ```bash
-composer test              # Все тесты (unit + integration)
+php bin/app.php db upgrade        # Применить миграции
+php bin/app.php db status         # Показать версию схемы
+php bin/app.php doctor            # Диагностика (конфиг, БД, расширения)
+php bin/app.php doctor --check-api # + API-проверка активных магазинов
+```
+
+Миграции применяются явно перед запуском HTTP. Обычные HTTP-запросы не запускают DDL.
+
+---
+
+## Команды разработки
+
+```bash
+composer test              # Все тесты (69+ сценариев)
 composer test:unit         # Только unit-тесты
 composer test:integration  # Только integration-тесты
 composer analyse           # PHPStan (максимальный уровень)
@@ -169,48 +185,36 @@ composer check             # Линтинг + анализ + тесты (пол�
 
 ```
 public/                     # HTTP entry point (index.php)
+bin/
+  app.php                   # CLI: миграции и диагностика
 src/
   InSales/                  # Протокольный слой (не зависит от фреймворка)
     Protocol.php            #   MD5-формулы (installPassword, token3)
-    ApiClient.php           #   HTTP-клиент к API InSales
+    ApiClient.php           #   HTTP-клиент к API InSales (без retry)
     ApiException.php        #   Ошибки API
-    ShopValidator.php       #   Валидация доменов магазинов
+    ShopValidator.php       #   Валидация доменов магазинов (+SSRF)
     NullLogger.php          #   Заглушка логгера
   Application/              # Сценарии жизненного цикла
-    InstallationService.php #   Установка + верификация
+    InstallationService.php #   Установка + синхронная верификация
     LoginService.php        #   Вход / autologin / сессии
-    UninstallService.php    #   Удаление
+    UninstallService.php    #   Удаление по паролю
+    LoginException.php      #   Ошибки входа
   Http/                     # Slim-слой
-    Controllers/            #   Контроллеры (Install, Login, Uninstall, Dashboard)
+    Controllers/            #   Install, Login, Uninstall, Dashboard
     Middleware/              #   SessionMiddleware
   Infrastructure/           # Инфраструктура
-    Database.php            #   PDO/SQLite с миграциями
-    Encryption.php          #   Sodium (XSalsa20-Poly1305)
-    JobQueue.php            #   Очередь заданий (SQLite)
+    Database.php            #   PDO/SQLite с миграциями и транзакциями
+    Encryption.php          #   Sodium (XChaCha20-Poly1305)
     Config.php              #   Загрузка конфигурации
-migrations/                 # SQL-миграции
-bin/
-  worker.php                # Фоновый worker для задач
+    ContainerFactory.php    #   DI-контейнер (PHP-DI)
+    SlimAppFactory.php      #   Slim-приложение с маршрутами
+migrations/                 # SQL-миграции (001–006)
 tests/
-  Unit/                     # Unit-тесты
-  Integration/              # Интеграционные тесты (с HTTP-симулятором)
+  Unit/                     # Unit-тесты (Protocol, Encryption, ShopValidator)
+  Integration/              # Интеграционные тесты (HTTP-симулятор)
   Simulator/                # Симулятор платформы InSales
-  Fixtures/                 # Тестовые векторы
-  bootstrap.php             # Загрузчик тестов
-.github/workflows/          # CI + Security audit
+  bootstrap.php             # Загрузчик тестов с явными миграциями
 ```
-
-### Добавление бизнес-логики
-
-1. **Новый API-метод:** добавьте метод в `InSales\ApiClient`, напишите тест.
-2. **Новый фоновый job:** создайте обработчик в `Application/`, зарегистрируйте
-   в `bin/worker.php` (секция `match`).
-3. **Новый HTTP-маршрут:** создайте контроллер в `Http/Controllers/`,
-   зарегистрируйте в `src/Infrastructure/SlimAppFactory.php`.
-4. **Вебхуки:** добавьте контроллер-обработчик, зарегистрируйте маршрут.
-   Для аутентификации вебхука используйте сохранённый секрет подписки (не
-   придумывайте встроенную подпись InSales — её нет в контракте).
-   InSales не отправляет HMAC-заголовки как в Shopify.
 
 ---
 
@@ -219,26 +223,11 @@ tests/
 Обычный запуск `composer test` не требует внешних ресурсов. Интеграционные тесты
 используют встроенный симулятор платформы InSales (локальный HTTP-сервер).
 
-### Симулятор
+Основной путь, проверяемый тестами:
+`/install` → `/login` → redirect симулятора → `/autologin` → `/` → `/probe` → `/uninstall`
 
-`Tests\Simulator\PlatformSimulator` реализует конечный набор endpoints:
-- `GET /admin/account.json` — проверка Basic Auth
-- `GET /admin/applications/{id}/login` — редирект с подписями
-- Неизвестные маршруты → 404
-
-Симулятор не является полной реализацией платформы InSales и не доказывает
-совместимость с реальным магазином.
-
-### Проверка на тестовом магазине
-
-Для дополнительной проверки на реальном InSales:
-
-1. Разверните приложение на HTTPS-сервере (например, ngrok).
-2. Создайте тестовый магазин в партнёрском кабинете.
-3. Установите приложение, выполните вход, проверьте API.
-4. Убедитесь, что удаление работает корректно.
-
-**Внимание:** не используйте рабочие магазины для первичного тестирования.
+Тесты проверяют: token3, изоляцию магазинов, истечение nonce, отзыв сессий,
+replay-атаки, гонки, лимит кандидатов, шифрование, миграции и временные ошибки.
 
 ---
 
@@ -248,24 +237,21 @@ tests/
 |---|---|---|
 | HTTP | Разрешён для loopback | Только HTTPS |
 | SQLite | Подходит для разработки | Заменить на PostgreSQL/MySQL |
-| Worker | Один процесс, in-process | Supervisor + несколько workers |
-| Очередь | SQLite-очередь | RabbitMQ / Redis / SQS |
-| Логирование | NullLogger | PSR-3 совместимый логгер (Monolog) |
-| Хранилище | SQLite-файл | Промышленная БД с бэкапами |
-| Сессии | In-memory / SQLite | Redis / БД |
+| Миграции | Явные, через CLI | Явные, через CLI |
+| Ключ шифрования | Может отсутствовать (предупреждение) | **Обязателен** |
+| Сессии | SQLite | Redis / БД |
+| Логирование | NullLogger | PSR-3 (Monolog) |
 
 ---
 
-## Ограничения заготовки
+## Ограничения
 
-- SQLite не подходит для production (конкурентный доступ).
-- Очередь на SQLite теряет производительность при высокой нагрузке.
-- Отсутствует полноценная обработка вебхуков (документированная точка расширения).
-- Нет OAuth/OIDC входа покупателей.
-- Нет полной синхронизации товаров/заказов.
-- Нет rate limiter на входящие запросы (защита от DoS).
-- Ключ шифрования в `.env` — для production использовать secrets manager.
-- Встроенный PHP-сервер — только для разработки.
+- Первый вход задерживается на время одного API-запроса к магазину
+- Нет автоматической проверки неоткрытых установок (требуется действие пользователя)
+- Базовый режим: один web-процесс и одна SQLite. Не проверен с пулом PHP-FPM
+- Нет webhook-подсистемы, фоновых задач, worker, cron и очереди
+- Нет OAuth/OIDC входа покупателей
+- Встроенный PHP-сервер — только для разработки
 
 ---
 

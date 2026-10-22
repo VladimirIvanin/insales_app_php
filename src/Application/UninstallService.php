@@ -166,17 +166,6 @@ final readonly class UninstallService
                     ],
                 );
             }
-
-            // Отменяем задачи очереди для этого магазина
-            $this->db->execute(
-                "UPDATE jobs SET status = 'failed', error = :error, completed_at = :now
-                 WHERE store_id = :store_id AND status IN ('pending', 'running')",
-                [
-                    'store_id' => $insalesId,
-                    'error' => 'Uninstalled',
-                    'now' => time(),
-                ],
-            );
         });
 
         return $processed;

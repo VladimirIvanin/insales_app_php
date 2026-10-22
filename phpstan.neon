@@ -4,7 +4,7 @@ parameters:
         - src/
         - tests/
         - public/index.php
-        - bin/worker.php
+        - bin/app.php
     strictRules:
         allRules: false
         booleansInConditions: true

@@ -25,6 +25,7 @@
     </source>
     <php>
         <env name="APP_ENV" value="test"/>
+        <env name="APP_DB_PATH" value="/tmp/insales-test-1000.sqlite3"/>
         <env name="APP_ENCRYPTION_KEY" value="0000000000000000000000000000000000000000000000000000000000000000"/>
         <env name="INSALES_APP_ID" value="test-app-id"/>
         <env name="INSALES_APP_SECRET" value="test-app-secret"/>

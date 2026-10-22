@@ -11,11 +11,12 @@ use Infrastructure\Encryption;
 
 /**
  * Service handling the employee login flow:
- * 1. Initiate login: generate nonce, redirect to InSales
- * 2. Handle autologin: verify token3, create session
+ * 1. Prepare store installation (verify candidate if needed)
+ * 2. Initiate login: generate nonce bound to store + generation, redirect to InSales
+ * 3. Handle autologin: verify token3 with generation check, create session
  *
  * Security:
- * - Nonce is single-use, bound to store and TTL
+ * - Nonce is single-use, bound to store, generation and TTL
  * - Initial /login parameters do NOT create an authenticated session
  * - token3 verified with hash_equals (constant-time)
  * - Session ID is generated cryptographically (random)
@@ -29,6 +30,7 @@ final readonly class LoginService
     public function __construct(
         private Database $db,
         private Encryption $encryption,
+        private InstallationService $installationService,
         private string $appId,
         private string $baseUrl,
         private ?string $platformBaseUrl = null,
@@ -36,16 +38,28 @@ final readonly class LoginService
     }
 
     /**
-     * Initiate login: generate nonce bound to store.
+     * Initiate login: prepare store install, then generate nonce bound to store + generation.
      *
      * @param string $storeId Store numeric ID
      * @param string $shop Normalized shop domain
-     * @return array{nonce: string, redirectUrl: string, sessionId: string}
+     * @return array{nonce: string, redirectUrl: string, sessionId: string, generation: int}
+     *
+     * @throws \RuntimeException On temporary API error (caller shows 503)
+     * @throws \InvalidArgumentException On permanent rejection
+     * @throws LoginException If store not found
      */
     public function initiateLogin(string $storeId, string $shop): array
     {
-        $store = $this->getStore($storeId, $shop);
+        // 1. Prepare installation (verify + activate candidate if pending, or check active store)
+        $storeData = $this->installationService->prepareAndActivate($shop, $storeId);
 
+        if ($storeData === null) {
+            throw new LoginException('Store is not installed');
+        }
+
+        $storeId = $storeData['store_id'];
+        $generation = $storeData['generation'];
+        $store = $this->getStore($storeId, $shop);
         $nonce = bin2hex(random_bytes(32));
         $sessionId = bin2hex(random_bytes(32));
 
@@ -56,12 +70,13 @@ final readonly class LoginService
         );
 
         $this->db->execute(
-            'INSERT INTO pending_logins (session_id, store_id, nonce, expires_at, created_at)
-             VALUES (:session_id, :store_id, :nonce, :expires_at, :created_at)',
+            'INSERT INTO pending_logins (session_id, store_id, nonce, generation, expires_at, created_at)
+             VALUES (:session_id, :store_id, :nonce, :generation, :expires_at, :created_at)',
             [
                 'session_id' => $sessionId,
                 'store_id' => $store['store_id'],
                 'nonce' => $nonce,
+                'generation' => $generation,
                 'expires_at' => time() + self::NONCE_TTL,
                 'created_at' => time(),
             ],
@@ -82,6 +97,7 @@ final readonly class LoginService
             'nonce' => $nonce,
             'redirectUrl' => $redirectUrl,
             'sessionId' => $sessionId,
+            'generation' => $generation,
         ];
     }
 
@@ -114,6 +130,15 @@ final readonly class LoginService
             }
 
             $store = $this->getStore((string) $pending['store_id']);
+
+            // Проверяем соответствие поколения: challenge связан с поколением
+            $challengeGeneration = (int) ($pending['generation'] ?? 0);
+            $storeGeneration = (int) $store['generation'];
+            if ($challengeGeneration > 0 && $challengeGeneration !== $storeGeneration) {
+                // Challenge от старого поколения — не принимаем
+                $this->db->execute('DELETE FROM pending_logins WHERE session_id = :sid', ['sid' => $sessionId]);
+                throw new LoginException('Login challenge generation mismatch');
+            }
 
             $expectedToken3 = Protocol::token3(
                 (string) $pending['nonce'],

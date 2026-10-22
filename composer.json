@@ -14,8 +14,6 @@
         "ext-pdo_sqlite": "*",
         "ext-sodium": "*",
         "ext-mbstring": "*",
-        "ext-pcntl": "*",
-        "ext-sockets": "*",
         "ext-curl": "*",
         "psr/log": "^3.0"
     },

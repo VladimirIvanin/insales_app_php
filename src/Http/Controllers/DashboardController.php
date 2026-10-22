@@ -56,8 +56,6 @@ final readonly class DashboardController
         .status { padding: 8px 16px; border-radius: 8px; margin: 8px 0; }
         .status-ok { background: #d4edda; color: #155724; }
         .status-error { background: #f8d7da; color: #721c24; }
-        .webhook-section { margin-top: 16px; padding: 16px; background: #f8f9fa; border-radius: 8px; }
-        .webhook-section h3 { margin-top: 0; }
     </style>
 </head>
 <body>
@@ -80,13 +78,6 @@ final readonly class DashboardController
             <form method="post" action="/logout" style="display:inline">
                 <button type="submit" class="btn btn-danger">Выйти</button>
             </form>
-        </div>
-        <div class="webhook-section">
-            <h3>Расширение приложения</h3>
-            <p>Для добавления обработчиков вебхуков создайте контроллер в <code>src/Http/Controllers/</code>
-               и зарегистрируйте маршрут в <code>public/index.php</code>.</p>
-            <p>Для фоновых задач используйте <code>Infrastructure\\JobQueue</code> и worker:
-               <code>php bin/worker.php</code>.</p>
         </div>
     </main>
 </body>

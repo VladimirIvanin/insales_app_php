@@ -6,8 +6,6 @@ namespace InSales;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
-use GuzzleHttp\Exception\ConnectException;
-use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\RequestOptions;
 use Psr\Log\LoggerInterface;
@@ -31,8 +29,6 @@ final readonly class ApiClient
     private const MAX_RESPONSE_BYTES = 2_000_000;
     private const REQUEST_TIMEOUT = 10.0;
     private const CONNECT_TIMEOUT = 5.0;
-    private const RETRY_MAX = 2;
-    private const RETRY_DELAY_MS = 500;
     private const OK_STATUSES = [200, 201];
 
     private ClientInterface $httpClient;
@@ -138,7 +134,7 @@ final readonly class ApiClient
     }
 
     /**
-     * Execute HTTP request with SSRF protection, retry, and logging.
+     * Execute HTTP request with SSRF protection, one attempt (no retries).
      *
      * @param array<string, mixed>|null $body
      * @return array{data: mixed, usage: string|null}
@@ -149,48 +145,14 @@ final readonly class ApiClient
         $this->verifyDestination();
 
         $url = $this->buildUrl($path);
-        $lastException = null;
-        $maxAttempts = ($method === 'GET') ? (self::RETRY_MAX + 1) : 1;
 
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            try {
-                return $this->doRequest($method, $url, $body);
-            } catch (ApiException $e) {
-                // Only retry safe GET on transient errors (429, 5xx)
-                if ($method !== 'GET' || !$e->isTemporary() || $attempt >= $maxAttempts) {
-                    throw $e;
-                }
-                $lastException = $e;
-                $this->logger->warning('Transient API error, retrying', [
-                    'attempt' => $attempt,
-                    'status' => $e->status,
-                    'shop' => $this->shop,
-                    'path' => $path,
-                ]);
-
-                if ($e->retryAfter !== null) {
-                    $delay = min((int) ((float) $e->retryAfter), 30); // cap at 30 seconds
-                    usleep($delay * 1_000_000);
-                } else {
-                    usleep(self::RETRY_DELAY_MS * 1000 * $attempt);
-                }
-            } catch (\Throwable $e) {
-                // Transport error — retry for GET
-                if ($method !== 'GET' || $attempt >= $maxAttempts) {
-                    throw new ApiException(0, $e->getMessage(), isTransient: true);
-                }
-                $lastException = $e;
-                $this->logger->warning('Transport error, retrying', [
-                    'attempt' => $attempt,
-                    'shop' => $this->shop,
-                    'path' => $path,
-                ]);
-                usleep(self::RETRY_DELAY_MS * 1000 * $attempt);
-            }
+        try {
+            return $this->doRequest($method, $url, $body);
+        } catch (ApiException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new ApiException(0, $e->getMessage(), isTransient: true);
         }
-
-        // Should not reach here, but satisfies type checker
-        throw new ApiException(0, 'Max retries exceeded', isTransient: true);
     }
 
     /**

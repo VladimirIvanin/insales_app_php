@@ -4,5 +4,6 @@
     <rule ref="PSR12"/>
     <file>src/</file>
     <file>tests/</file>
+    <file>bin/</file>
     <exclude-pattern>tests/bootstrap.php</exclude-pattern>
 </ruleset>

@@ -16,13 +16,12 @@ use Http\Middleware\SessionMiddleware;
 use Infrastructure\Config;
 use Infrastructure\Database;
 use Infrastructure\Encryption;
-use Infrastructure\JobQueue;
 use Psr\Container\ContainerInterface;
 
 /**
- * Единая фабрика DI-контейнера для HTTP (index.php) и worker (worker.php).
+ * Единая фабрика DI-контейнера для HTTP (index.php) и CLI (bin/app.php).
  *
- * Пустой APP_ENCRYPTION_KEY завершает оба процесса.
+ * Пустой APP_ENCRYPTION_KEY завершает процесс в production.
  */
 final readonly class ContainerFactory
 {
@@ -44,39 +43,14 @@ final readonly class ContainerFactory
 
         $container = new Container();
 
-        // Infrastructure
-        $container->set(Database::class, function () use ($dbPath, $rootDir) {
-            $db = new Database($dbPath);
-            $migrations = require $rootDir . '/migrations/migrate.php';
-            $db->migrate($migrations);
-            return $db;
+        // Infrastructure — Database without auto-migration.
+        // Run migrations explicitly: php bin/app.php db upgrade
+        $container->set(Database::class, function () use ($dbPath) {
+            return new Database($dbPath);
         });
 
         $container->set(Encryption::class, function () use ($encryptionKey) {
             return new Encryption($encryptionKey);
-        });
-
-        $container->set(JobQueue::class, function (ContainerInterface $c) {
-            return new JobQueue(
-                $c->get(Database::class),
-                'default',
-                // При окончательном fail verify_install — чистим candidate и поколение
-                function (array $failedJob) use ($c): void {
-                    $payload = json_decode(
-                        (string) ($failedJob['payload'] ?? '{}'),
-                        true,
-                        512,
-                        \JSON_THROW_ON_ERROR,
-                    );
-                    if (($failedJob['type'] ?? '') === 'verify_install' && isset($payload['candidate_id'], $payload['store_id'])) {
-                        $installationService = $c->get(InstallationService::class);
-                        $installationService->cleanupCandidate(
-                            (string) $payload['candidate_id'],
-                            (string) $payload['store_id'],
-                        );
-                    }
-                },
-            );
         });
 
         // Application services
@@ -84,7 +58,6 @@ final readonly class ContainerFactory
             return new InstallationService(
                 $c->get(Database::class),
                 $c->get(Encryption::class),
-                $c->get(JobQueue::class),
                 $appSecret,
                 $appId,
                 $allowedShops,
@@ -97,6 +70,7 @@ final readonly class ContainerFactory
             return new LoginService(
                 $c->get(Database::class),
                 $c->get(Encryption::class),
+                $c->get(InstallationService::class),
                 $appId,
                 $baseUrl,
             );

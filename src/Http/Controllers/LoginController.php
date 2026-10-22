@@ -25,6 +25,7 @@ final readonly class LoginController
      *
      * Parameters: shop, insales_id
      * Does NOT create an authenticated session based on these params alone.
+     * Sets a challenge cookie (separate from the authenticated session cookie).
      */
     public function login(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
@@ -41,8 +42,8 @@ final readonly class LoginController
         try {
             $result = $this->loginService->initiateLogin($insalesId, $shop);
 
-            // Set the pending session cookie
-            $response = $this->sessionMiddleware->setSessionCookie($response, $result['sessionId']);
+            // Set the challenge cookie (separate from session)
+            $response = $this->sessionMiddleware->setChallengeCookie($response, $result['sessionId']);
 
             return $response
                 ->withStatus(302)
@@ -50,6 +51,10 @@ final readonly class LoginController
         } catch (LoginException | \InvalidArgumentException $e) {
             $response->getBody()->write('Login error: ' . $e->getMessage());
             return $response->withStatus(400);
+        } catch (\RuntimeException $e) {
+            // Temporary API error during install verification
+            $response->getBody()->write('Service temporarily unavailable');
+            return $response->withStatus(503);
         } catch (\Throwable $e) {
             $response->getBody()->write('Internal error');
             return $response->withStatus(500);
@@ -58,11 +63,15 @@ final readonly class LoginController
 
     /**
      * Handle GET /autologin — verify token3 and create authenticated session.
+     *
+     * Reads the challenge cookie, verifies token3, then exchanges
+     * challenge for an authenticated session cookie.
+     * On success, clears the challenge cookie.
      */
     public function autologin(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $cookies = $request->getCookieParams();
-        $sessionId = $cookies[SessionMiddleware::COOKIE_NAME] ?? '';
+        $sessionId = $cookies[SessionMiddleware::CHALLENGE_COOKIE] ?? '';
 
         if ($sessionId === '' || !preg_match('/^[a-f0-9]{64}$/', $sessionId)) {
             $response->getBody()->write('Unauthorized');
@@ -74,14 +83,15 @@ final readonly class LoginController
         try {
             $result = $this->loginService->handleAutologin($sessionId, $params);
 
-            // Set authenticated session cookie
+            // Clear challenge, set authenticated session
+            $response = $this->sessionMiddleware->clearChallengeCookie($response);
             $response = $this->sessionMiddleware->setSessionCookie($response, $result['authToken']);
 
             return $response
                 ->withStatus(302)
                 ->withHeader('Location', $this->baseUrl . '/');
         } catch (LoginException $e) {
-            $response = $this->sessionMiddleware->clearSessionCookie($response);
+            $response = $this->sessionMiddleware->clearChallengeCookie($response);
             $response->getBody()->write('Login failed: ' . $e->getMessage());
             return $response->withStatus(401);
         } catch (\Throwable $e) {
@@ -91,7 +101,7 @@ final readonly class LoginController
     }
 
     /**
-     * Handle POST /logout — destroy session.
+     * Handle POST /logout — destroy session and clear all cookies.
      */
     public function logout(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
@@ -102,7 +112,7 @@ final readonly class LoginController
             $this->loginService->destroySession($authToken);
         }
 
-        $response = $this->sessionMiddleware->clearSessionCookie($response);
+        $response = $this->sessionMiddleware->clearAllCookies($response);
         return $response
             ->withStatus(302)
             ->withHeader('Location', $this->baseUrl . '/');

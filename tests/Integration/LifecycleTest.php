@@ -10,7 +10,6 @@ use Application\UninstallService;
 use InSales\Protocol;
 use Infrastructure\Database;
 use Infrastructure\Encryption;
-use Infrastructure\JobQueue;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
@@ -21,6 +20,7 @@ use Tests\Simulator\PlatformSimulator;
  *
  * These tests use the real InSalesClient against a local HTTP simulator,
  * verify the full install → login → API access → uninstall flow.
+ * Installation verification is done synchronously via GET /login.
  */
 #[CoversNothing]
 #[TestDox('Full lifecycle against platform simulator')]
@@ -30,7 +30,6 @@ final class LifecycleTest extends TestCase
     private static string $simulatorUrl;
     private static Database $db;
     private static Encryption $encryption;
-    private static JobQueue $queue;
     private InstallationService $installationService;
     private LoginService $loginService;
     private UninstallService $uninstallService;
@@ -51,8 +50,6 @@ final class LifecycleTest extends TestCase
         $keyHex = bin2hex(str_repeat("\x00", SODIUM_CRYPTO_SECRETBOX_KEYBYTES));
         self::$encryption = new Encryption($keyHex);
 
-        self::$queue = new JobQueue(self::$db);
-
         self::$simulator = new PlatformSimulator('test-app-id', 'test-app-secret');
         self::$simulatorUrl = self::$simulator->start();
     }
@@ -69,7 +66,6 @@ final class LifecycleTest extends TestCase
         self::$db->execute('DELETE FROM install_candidates');
         self::$db->execute('DELETE FROM pending_logins');
         self::$db->execute('DELETE FROM sessions');
-        self::$db->execute('DELETE FROM jobs');
         self::$db->execute('DELETE FROM installation_generations');
 
         self::$simulator->reset();
@@ -78,7 +74,6 @@ final class LifecycleTest extends TestCase
         $this->installationService = new InstallationService(
             self::$db,
             self::$encryption,
-            self::$queue,
             $this->appSecret,
             $this->appId,
             ['test.myshop.ru', '127.0.0.1'],
@@ -89,6 +84,7 @@ final class LifecycleTest extends TestCase
         $this->loginService = new LoginService(
             self::$db,
             self::$encryption,
+            $this->installationService,
             $this->appId,
             'http://127.0.0.1:18765',
             self::$simulatorUrl,
@@ -113,42 +109,34 @@ final class LifecycleTest extends TestCase
         // Register store in simulator
         self::$simulator->addStore($shop, $password, $storeId, 'Test Store');
 
-        // 1. Install
+        // 1. Install (no API call yet)
         $candidateId = $this->installationService->handleInstall($shop, $token, $storeId);
         $this->assertNotEmpty($candidateId);
 
-        // 2. Process verify job
-        $job = self::$queue->claim();
-        $this->assertNotNull($job, 'Expected a verify job');
-        $this->assertSame('verify_install', $job['type']);
+        // Verify: candidate exists, no store yet
+        $candidate = self::$db->fetch('SELECT * FROM install_candidates WHERE id = :id', ['id' => $candidateId]);
+        $this->assertNotNull($candidate);
+        $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
 
-        $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
+        // 2. Login triggers prepare + activate (API call)
+        $loginResult = $this->loginService->initiateLogin($storeId, $shop);
+        $this->assertNotEmpty($loginResult['nonce']);
+        $this->assertNotEmpty($loginResult['sessionId']);
+        $this->assertStringContainsString('/admin/applications/', $loginResult['redirectUrl']);
+        $this->assertStringStartsWith(self::$simulatorUrl, $loginResult['redirectUrl']);
 
-        // 3. Verify store is installed
+        // 3. Verify store is now activated
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertNotNull($store);
         $this->assertSame($shop, $store['shop']);
         $this->assertSame('Test Store', $store['title']);
+        $this->assertSame(1, (int) $store['generation']);
+        $this->assertSame($loginResult['generation'], (int) $store['generation']);
 
-        // 4. Login flow
-        $loginResult = $this->loginService->initiateLogin($storeId, $shop);
-
-        $this->assertNotEmpty($loginResult['nonce']);
-        $this->assertNotEmpty($loginResult['sessionId']);
-        $this->assertStringContainsString('/admin/applications/', $loginResult['redirectUrl']);
-        /** @var non-empty-string $simulatorUrl */
-        $simulatorUrl = self::$simulatorUrl;
-        $this->assertStringStartsWith(
-            $simulatorUrl,
-            $loginResult['redirectUrl'],
-            'redirectUrl должен начинаться с URL симулятора'
-        );
-
-        // 5. Расшифровываем пароль для проверок
+        // 4. Расшифровываем пароль для проверок
         $decryptedPassword = self::$encryption->decrypt((string) $store['encrypted_password']);
 
-        // 6. Выполняем HTTP-запрос редиректа к симулятору и сверяем token3
+        // 5. Выполняем HTTP-запрос редиректа к симулятору и сверяем token3
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL => $loginResult['redirectUrl'],
@@ -163,8 +151,8 @@ final class LifecycleTest extends TestCase
         $redirectUrl = curl_getinfo($ch, CURLINFO_REDIRECT_URL);
         curl_close($ch);
 
-        $this->assertSame(302, $httpCode, 'Симулятор должен ответить 302');
-        $this->assertNotNull($redirectUrl, 'Должен быть редирект');
+        $this->assertSame(302, $httpCode, 'Simulator should respond with 302');
+        $this->assertNotNull($redirectUrl, 'Should have redirect URL');
 
         $redirectParts = [];
         $redirectQuery = parse_url((string) $redirectUrl, PHP_URL_QUERY);
@@ -186,10 +174,10 @@ final class LifecycleTest extends TestCase
         $this->assertSame(
             $expectedToken3FromRedirect,
             (string) ($redirectParts['token3'] ?? ''),
-            'token3 из редиректа симулятора должен совпадать с Protocol::token3'
+            'token3 from simulator redirect should match Protocol::token3',
         );
 
-        // 7. Simulate autologin callback
+        // 6. Simulate autologin callback
         $expectedToken3 = Protocol::token3(
             $loginResult['nonce'],
             'admin@example.com',
@@ -251,28 +239,27 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop1, $token1, $storeId1);
         $this->installationService->handleInstall($shop2, $token2, $storeId2);
 
-        // Process both verify jobs
-        for ($i = 0; $i < 2; $i++) {
-            $job = self::$queue->claim();
-            $this->assertNotNull($job);
-            $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-            self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
-        }
-
-        // Login to store 1
+        // Login to store 1 — triggers verification
         $login1 = $this->loginService->initiateLogin($storeId1, $shop1);
+
+        // Login to store 2
+        $login2 = $this->loginService->initiateLogin($storeId2, $shop2);
+
+        // Both stores must be activated
         $store1 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId1]);
+        $store2 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId2]);
+        $this->assertNotNull($store1);
+        $this->assertNotNull($store2);
+
         $passDec1 = self::$encryption->decrypt((string) $store1['encrypted_password']);
+        $passDec2 = self::$encryption->decrypt((string) $store2['encrypted_password']);
+
         $expectedT3_1 = Protocol::token3($login1['nonce'], 'admin1@test.com', 'Admin1', '1', 'true', $passDec1);
         $auth1 = $this->loginService->handleAutologin($login1['sessionId'], [
             'token3' => $expectedT3_1, 'user_email' => 'admin1@test.com',
             'user_name' => 'Admin1', 'user_id' => '1', 'email_confirmed' => 'true',
         ]);
 
-        // Login to store 2
-        $login2 = $this->loginService->initiateLogin($storeId2, $shop2);
-        $store2 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId2]);
-        $passDec2 = self::$encryption->decrypt((string) $store2['encrypted_password']);
         $expectedT3_2 = Protocol::token3($login2['nonce'], 'admin2@test.com', 'Admin2', '2', 'true', $passDec2);
         $auth2 = $this->loginService->handleAutologin($login2['sessionId'], [
             'token3' => $expectedT3_2, 'user_email' => 'admin2@test.com',
@@ -304,7 +291,7 @@ final class LifecycleTest extends TestCase
         $password = Protocol::installPassword('tok', $this->appSecret);
         self::$simulator->addStore($shop, $password, $storeId);
 
-        // Install directly (skip installation verification for brevity)
+        // Install directly (skip API verification for brevity)
         $encPass = self::$encryption->encrypt($password);
         self::$db->execute(
             'INSERT INTO stores (store_id, shop, encrypted_password, title, generation, installed_at)
@@ -443,13 +430,12 @@ final class LifecycleTest extends TestCase
         $password = Protocol::installPassword($token, $this->appSecret);
         self::$simulator->addStore($shop, $password, $storeId);
 
-        // Install and verify
+        // Install and activate via login
         $this->installationService->handleInstall($shop, $token, $storeId);
-        $job = self::$queue->claim();
-        $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
+        $this->loginService->initiateLogin($storeId, $shop);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
+        $this->assertNotNull($store);
         $passDec = self::$encryption->decrypt((string) $store['encrypted_password']);
 
         // Uninstall
@@ -458,9 +444,6 @@ final class LifecycleTest extends TestCase
 
         // Verify candidates are gone
         $this->assertNull(self::$db->fetch('SELECT * FROM install_candidates WHERE store_id = :id', ['id' => $storeId]));
-
-        // Simulator should reject API calls with old password
-        // (Verified via the account endpoint returning 401)
     }
 
     #[TestDox('reinstall creates new password generation after uninstall')]
@@ -472,11 +455,9 @@ final class LifecycleTest extends TestCase
         $password1 = Protocol::installPassword($token1, $this->appSecret);
         self::$simulator->addStore($shop, $password1, $storeId, 'Original');
 
-        // First install
+        // First install + activate via login
         $this->installationService->handleInstall($shop, $token1, $storeId);
-        $job = self::$queue->claim();
-        $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
+        $this->loginService->initiateLogin($storeId, $shop);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertSame(1, (int) $store['generation']);
@@ -486,15 +467,13 @@ final class LifecycleTest extends TestCase
         $this->uninstallService->handleUninstall($shop, $passDec1, $storeId);
         $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
 
-        // Reinstall with new token
+        // Reinstall with new credentials
         $token2 = 'second-install';
         $password2 = Protocol::installPassword($token2, $this->appSecret);
         self::$simulator->addStore($shop, $password2, $storeId, 'Updated');
 
         $this->installationService->handleInstall($shop, $token2, $storeId);
-        $job = self::$queue->claim();
-        $this->installationService->verifyCandidate($job['payload']['candidate_id']);
-        self::$queue->complete((int) $job['id'], (string) $job['lease_token']);
+        $this->loginService->initiateLogin($storeId, $shop);
 
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertSame(2, (int) $store['generation']);
@@ -517,11 +496,13 @@ final class LifecycleTest extends TestCase
         self::$simulator->addStore($shop, $password, '999', 'Wrong Store');
 
         $this->installationService->handleInstall($shop, $token, $storeId);
-        $job = self::$queue->claim();
-        $this->installationService->verifyCandidate($job['payload']['candidate_id']);
+
+        // Login should fail because account.id doesn't match
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Store identity mismatch');
+        $this->loginService->initiateLogin($storeId, $shop);
 
         // Candidate should be removed, store should not be created
         $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
-        $this->assertNull(self::$db->fetch('SELECT * FROM install_candidates WHERE id = :id', ['id' => $job['payload']['candidate_id']]));
     }
 }
