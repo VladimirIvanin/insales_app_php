@@ -1,0 +1,17 @@
+{
+    "install": {
+        "token": "demo-install-token",
+        "secret": "demo-app-secret",
+        "expected_password": "2b6479b65a8456e70c98779838646881"
+    },
+    "autologin": {
+        "nonce": "demo-login-nonce",
+        "email": "user@example.invalid",
+        "name": "Тестовый партнёр",
+        "user_id": "42",
+        "email_confirmed": "false",
+        "expected_token": "9698ec8c5a26793b2ba9b5e3c432b888",
+        "expected_token2": "42aaf55849b301db402cbdf7b095d342",
+        "expected_token3": "0f73f440da4b86d8be62f3e19b57c77e"
+    }
+}

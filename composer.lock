@@ -1,0 +1,22 @@
+{
+    "_readme": [
+        "This file is a placeholder. Run 'composer install' to generate the actual lock file.",
+        "The versions below are compatible with PHP 8.4 and represent the latest stable releases as of 2026-10."
+    ],
+    "content-hash": "placeholder-run-composer-install",
+    "packages": [],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {
+        "php": ">=8.4",
+        "ext-pdo": "*",
+        "ext-sodium": "*",
+        "ext-mbstring": "*"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.6.0"
+}

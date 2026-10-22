@@ -1,0 +1,12 @@
+parameters:
+    level: max
+    paths:
+        - src/
+        - tests/
+    strictRules:
+        allRules: true
+    checkMissingIterableValueType: true
+    checkUninitializedProperties: true
+    checkTooWideReturnTypes: true
+    treatPhpDocTypesAsCertain: false
+    tmpDir: .phpstan-cache

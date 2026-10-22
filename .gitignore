@@ -1,0 +1,6 @@
+vendor/
+runtime/
+.env
+.phpunit.cache/
+.phpstan-cache/
+*.sqlite3
