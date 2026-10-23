@@ -1,14 +1,16 @@
 <?php
 
-declare(strict_types=1);
-
 /**
  * Test bootstrap.
+ *
+ * Сценарий с побочными эффектами: окружение и миграции до запуска тестов.
  */
+
+declare(strict_types=1);
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-// Set test environment — APP_DB_PATH MUST be set BEFORE any ContainerFactory/Config load
+// APP_DB_PATH задаётся до загрузки ContainerFactory и Config.
 $_ENV['APP_ENV'] = 'test';
 $_ENV['APP_DB_PATH'] = __DIR__ . '/../runtime/test.sqlite3';
 $_ENV['INSALES_APP_ID'] = 'test-app-id';
@@ -17,25 +19,12 @@ $_ENV['ALLOWED_SHOPS'] = 'test.myshop.ru,127.0.0.1';
 $_ENV['APP_BASE_URL'] = 'http://127.0.0.1:18765';
 $_ENV['APP_ENCRYPTION_KEY'] = '0000000000000000000000000000000000000000000000000000000000000000';
 
-// Clean up any previous test databases — use /tmp for writable storage
 $dbPath = '/tmp/insales-test-' . getmyuid() . '.sqlite3';
 $_ENV['APP_DB_PATH'] = $dbPath;
 if (file_exists($dbPath)) {
     unlink($dbPath);
 }
 
-// Apply migrations explicitly for tests
 $migrations = require __DIR__ . '/../migrations/migrate.php';
 $db = new \Infrastructure\Database($dbPath);
 $db->migrate($migrations);
-
-// Set up md5 alias if not available (PHP 8.4+ still has it)
-if (!function_exists('md5')) {
-    /**
-     * Polyfill md5() helper used in Protocol.
-     */
-    function md5(string $data): string
-    {
-        return hash('md5', $data);
-    }
-}

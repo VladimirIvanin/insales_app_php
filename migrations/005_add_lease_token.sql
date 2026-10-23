@@ -1,7 +1,6 @@
--- Migration 005: Add lease_token for safe job ACK
+-- Migration 005: legacy column on the unused jobs table.
 --
--- Каждому claim() присваивается уникальный lease_token.
--- complete()/fail() проверяют token + running status,
--- предотвращая модификацию завершённых или перевыданных задач поздними воркерами.
+-- Очередь и worker удалены. Колонка остаётся, чтобы уже накатанные
+-- базы получали ту же схему; приложение её не читает.
 
 ALTER TABLE jobs ADD COLUMN lease_token TEXT;

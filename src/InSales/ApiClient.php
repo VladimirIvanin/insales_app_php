@@ -256,7 +256,12 @@ final readonly class ApiClient
             throw new ApiException(0, 'Connection failed: ' . $e->getMessage(), isTransient: true);
         } catch (RequestException $e) {
             $statusCode = $e->getResponse()?->getStatusCode() ?? 0;
-            throw new ApiException($statusCode, 'Request failed: ' . $e->getMessage(), isTransient: $statusCode >= 500 || $statusCode === 0);
+            $temporary = $statusCode >= 500 || $statusCode === 0;
+            throw new ApiException(
+                $statusCode,
+                'Request failed: ' . $e->getMessage(),
+                isTransient: $temporary,
+            );
         } catch (\JsonException $e) {
             throw new ApiException(200, 'Invalid JSON response: ' . $e->getMessage());
         } catch (\Throwable $e) {

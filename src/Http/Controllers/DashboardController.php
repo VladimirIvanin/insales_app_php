@@ -40,7 +40,14 @@ final readonly class DashboardController
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Partner App</title>
     <style>
-        body { font: 18px system-ui, -apple-system, sans-serif; max-width: 720px; margin: 60px auto; padding: 24px; background: #f4f7fb; color: #192a40; }
+        body {
+            font: 18px system-ui, -apple-system, sans-serif;
+            max-width: 720px;
+            margin: 60px auto;
+            padding: 24px;
+            background: #f4f7fb;
+            color: #192a40;
+        }
         main { background: white; border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
         h1 { margin-top: 0; color: #0a1a2a; }
         .info { margin: 16px 0; }
@@ -49,7 +56,14 @@ final readonly class DashboardController
         a { color: #165dcc; text-decoration: none; }
         a:hover { text-decoration: underline; }
         .nav { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e0e6ed; }
-        button, .btn { display: inline-block; padding: 8px 20px; border-radius: 8px; border: none; cursor: pointer; font-size: 16px; }
+        button, .btn {
+            display: inline-block;
+            padding: 8px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
         .btn-primary { background: #165dcc; color: white; }
         .btn-primary:hover { background: #134db3; }
         .btn-danger { background: #dc3545; color: white; }
@@ -155,7 +169,14 @@ HTML;
     <meta charset="utf-8">
     <title>API Probe — успех</title>
     <style>
-        body { font: 18px system-ui; max-width: 720px; margin: 60px auto; padding: 24px; background: #f4f7fb; color: #192a40; }
+        body {
+            font: 18px system-ui;
+            max-width: 720px;
+            margin: 60px auto;
+            padding: 24px;
+            background: #f4f7fb;
+            color: #192a40;
+        }
         main { background: white; border-radius: 16px; padding: 32px; }
         pre { background: #f0f2f5; padding: 16px; border-radius: 8px; overflow-x: auto; }
         .success { background: #d4edda; color: #155724; padding: 12px 20px; border-radius: 8px; margin: 16px 0; }
@@ -181,10 +202,12 @@ HTML;
                 ->withHeader('X-Content-Type-Options', 'nosniff');
         } catch (\InSales\ApiException $e) {
             $this->logger?->error('API probe failed', ['shop' => $shop, 'error' => $e->getMessage()]);
-            return $this->renderHtml($response, 'Ошибка API: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'), 502);
+            $message = 'Ошибка API: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
+            return $this->renderHtml($response, $message, 502);
         } catch (\Throwable $e) {
             $this->logger?->error('API probe error', ['shop' => $shop, 'error' => $e->getMessage()]);
-            return $this->renderHtml($response, 'Ошибка: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'), 502);
+            $message = 'Ошибка: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
+            return $this->renderHtml($response, $message, 502);
         }
     }
 
@@ -204,7 +227,17 @@ HTML;
 <!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="utf-8"><title>Partner App</title>
-<style>body{font:18px system-ui;max-width:720px;margin:60px auto;padding:24px;background:#f4f7fb;color:#192a40}main{background:white;border-radius:16px;padding:32px}</style>
+<style>
+body{
+    font:18px system-ui;
+    max-width:720px;
+    margin:60px auto;
+    padding:24px;
+    background:#f4f7fb;
+    color:#192a40
+}
+main{background:white;border-radius:16px;padding:32px}
+</style>
 </head>
 <body><main><p>{$escaped}</p><a href="/">На главную</a></main></body>
 </html>

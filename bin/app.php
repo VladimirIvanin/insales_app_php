@@ -299,11 +299,15 @@ function handleDoctor(array $args, string $rootDir, Config $config): void
                             $elapsed = round(microtime(true) - $start, 2);
 
                             $returnedId = (string) ($account['id'] ?? '');
-                            $match = $returnedId === $storeId ? '✓' : '✗ ID mismatch';
-
-                            echo "   [{$title}] {$shop}: {$match} ({$elapsed}s)\n";
+                            if ($returnedId === $storeId) {
+                                echo "   [{$title}] {$shop}: ✓ ({$elapsed}s)\n";
+                            } else {
+                                echo "   [{$title}] {$shop}: ✗ ID mismatch ({$elapsed}s)\n";
+                                $hasErrors = true;
+                            }
                         } catch (\Throwable $e) {
                             echo "   [{$title}] {$shop}: ✗ {$e->getMessage()}\n";
+                            $hasErrors = true;
                         }
                     }
                 }
@@ -323,13 +327,5 @@ function handleDoctor(array $args, string $rootDir, Config $config): void
 
 function resolveDbPath(Config $config, string $rootDir): string
 {
-    $dbPath = $config->getString('APP_DB_PATH', '');
-    if ($dbPath === '') {
-        return $rootDir . '/runtime/app.sqlite3';
-    }
-    // If relative, resolve against rootDir
-    if (str_starts_with($dbPath, '/')) {
-        return $dbPath;
-    }
-    return $rootDir . '/' . $dbPath;
+    return \Infrastructure\ContainerFactory::resolveDbPath($config, $rootDir);
 }

@@ -2,8 +2,16 @@
 <ruleset name="InSalesApp">
     <description>PSR-12 coding standard</description>
     <rule ref="PSR12"/>
+    <!--
+        bin/app.php и router симулятора — сценарии: они объявляют функции
+        и сразу исполняются. Библиотечный код правилу side effects подчиняется.
+    -->
+    <rule ref="PSR1.Files.SideEffects">
+        <exclude-pattern>bin/app\.php$</exclude-pattern>
+        <exclude-pattern>tests/Simulator/router\.php$</exclude-pattern>
+    </rule>
     <file>src/</file>
     <file>tests/</file>
     <file>bin/</file>
-    <exclude-pattern>tests/bootstrap.php</exclude-pattern>
+    <file>public/index.php</file>
 </ruleset>

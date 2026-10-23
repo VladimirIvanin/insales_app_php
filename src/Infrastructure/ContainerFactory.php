@@ -35,7 +35,7 @@ final readonly class ContainerFactory
         $baseUrl = $config->getString('APP_BASE_URL');
         $allowedShops = $config->getAllowedShops();
         $encryptionKey = self::resolveEncryptionKey($config);
-        $dbPath = $config->getString('APP_DB_PATH', $rootDir . '/runtime/app.sqlite3');
+        $dbPath = self::resolveDbPath($config, $rootDir);
         $appEnv = $config->getString('APP_ENV', 'development');
         $allowHttp = $appEnv === 'test';
 
@@ -52,21 +52,28 @@ final readonly class ContainerFactory
         });
 
         // Application services
-        $container->set(InstallationService::class, function (ContainerInterface $c) use ($appSecret, $appId, $allowedShops, $allowHttp, $baseUrl): InstallationService {
-            $db = $c->get(Database::class);
-            assert($db instanceof Database);
-            $encryption = $c->get(Encryption::class);
-            assert($encryption instanceof Encryption);
-            return new InstallationService(
-                $db,
-                $encryption,
+        $container->set(
+            InstallationService::class,
+            function (ContainerInterface $c) use (
                 $appSecret,
                 $appId,
                 $allowedShops,
                 $allowHttp,
-                platformBaseUrl: $baseUrl,
-            );
-        });
+            ): InstallationService {
+                $db = $c->get(Database::class);
+                assert($db instanceof Database);
+                $encryption = $c->get(Encryption::class);
+                assert($encryption instanceof Encryption);
+                return new InstallationService(
+                    $db,
+                    $encryption,
+                    $appSecret,
+                    $appId,
+                    $allowedShops,
+                    $allowHttp,
+                );
+            },
+        );
 
         $container->set(LoginService::class, function (ContainerInterface $c) use ($appId, $baseUrl): LoginService {
             $db = $c->get(Database::class);
@@ -84,20 +91,24 @@ final readonly class ContainerFactory
             );
         });
 
-        $container->set(UninstallService::class, function (ContainerInterface $c) use ($allowedShops, $allowHttp): UninstallService {
-            $db = $c->get(Database::class);
-            assert($db instanceof Database);
-            $encryption = $c->get(Encryption::class);
-            assert($encryption instanceof Encryption);
-            return new UninstallService(
-                $db,
-                $encryption,
-                $allowedShops,
-                $allowHttp,
-            );
-        });
+        $container->set(
+            UninstallService::class,
+            function (ContainerInterface $c) use ($allowedShops, $allowHttp): UninstallService {
+                $db = $c->get(Database::class);
+                assert($db instanceof Database);
+                $encryption = $c->get(Encryption::class);
+                assert($encryption instanceof Encryption);
+                return new UninstallService(
+                    $db,
+                    $encryption,
+                    $allowedShops,
+                    $allowHttp,
+                );
+            },
+        );
 
-        // HTTP layer (только для index.php — worker использует сервисы напрямую)
+        // HTTP layer. platformBaseUrl симулятора сюда не передаётся:
+        // его задают только тесты при прямом создании сервисов.
         $container->set(SessionMiddleware::class, function (ContainerInterface $c) use ($baseUrl): SessionMiddleware {
             $loginService = $c->get(LoginService::class);
             assert($loginService instanceof LoginService);
@@ -139,23 +150,43 @@ final readonly class ContainerFactory
             return new \Psr\Log\NullLogger();
         });
 
-        $container->set(DashboardController::class, function (ContainerInterface $c) use ($appId, $allowHttp): DashboardController {
-            $db = $c->get(Database::class);
-            assert($db instanceof Database);
-            $encryption = $c->get(Encryption::class);
-            assert($encryption instanceof Encryption);
-            $logger = $c->get(LoggerInterface::class);
-            assert($logger instanceof LoggerInterface);
-            return new DashboardController(
-                $appId,
-                $allowHttp,
-                $db,
-                $encryption,
-                $logger,
-            );
-        });
+        $container->set(
+            DashboardController::class,
+            function (ContainerInterface $c) use ($appId, $allowHttp): DashboardController {
+                $db = $c->get(Database::class);
+                assert($db instanceof Database);
+                $encryption = $c->get(Encryption::class);
+                assert($encryption instanceof Encryption);
+                $logger = $c->get(LoggerInterface::class);
+                assert($logger instanceof LoggerInterface);
+                return new DashboardController(
+                    $appId,
+                    $allowHttp,
+                    $db,
+                    $encryption,
+                    $logger,
+                );
+            },
+        );
 
         return $container;
+    }
+
+    /**
+     * Нормализует путь к БД в абсолютный относительно корня проекта.
+     */
+    public static function resolveDbPath(Config $config, string $rootDir): string
+    {
+        $dbPath = $config->getString('APP_DB_PATH', '');
+        if ($dbPath === '') {
+            return $rootDir . '/runtime/app.sqlite3';
+        }
+        // Если уже абсолютный — оставляем как есть
+        if (str_starts_with($dbPath, '/')) {
+            return $dbPath;
+        }
+        // Относительный — разрешаем относительно корня проекта
+        return $rootDir . '/' . $dbPath;
     }
 
     /**
@@ -177,8 +208,7 @@ final readonly class ContainerFactory
             );
         }
 
-        // Dev/test — детерминированный ключ (не случайный) для воспроизводимости
-        // между HTTP и worker процессами
+        // Dev/test — детерминированный ключ, одинаковый у CLI и HTTP этого процесса.
         trigger_error(
             'APP_ENCRYPTION_KEY is empty in ' . $env . ' environment. '
             . 'Set a persistent key in .env to avoid data loss between restarts. '

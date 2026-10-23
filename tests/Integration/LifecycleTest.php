@@ -30,11 +30,8 @@ final class LifecycleTest extends TestCase
     private static string $simulatorUrl;
     private static Database $db;
     private static Encryption $encryption;
-    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private InstallationService $installationService;
-    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private LoginService $loginService;
-    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private UninstallService $uninstallService;
 
     private string $appId = 'test-app-id';
@@ -68,6 +65,7 @@ final class LifecycleTest extends TestCase
         self::$db->execute('DELETE FROM pending_logins');
         self::$db->execute('DELETE FROM sessions');
         self::$db->execute('DELETE FROM installation_generations');
+        self::$db->execute('DELETE FROM uninstall_tombstones');
 
         self::$simulator->reset();
 
@@ -178,8 +176,9 @@ final class LifecycleTest extends TestCase
         $redirectUserName = is_string($redirectParts['user_name'] ?? null) ? $redirectParts['user_name'] : '';
         /** @var string $redirectUserId */
         $redirectUserId = is_string($redirectParts['user_id'] ?? null) ? $redirectParts['user_id'] : '';
-        /** @var string $redirectEmailConfirmed */
-        $redirectEmailConfirmed = is_string($redirectParts['email_confirmed'] ?? null) ? $redirectParts['email_confirmed'] : 'true';
+        $redirectEmailConfirmed = is_string($redirectParts['email_confirmed'] ?? null)
+            ? $redirectParts['email_confirmed']
+            : 'true';
         /** @var string $redirectToken3 */
         $redirectToken3 = is_string($redirectParts['token3'] ?? null) ? $redirectParts['token3'] : '';
 
@@ -266,13 +265,10 @@ final class LifecycleTest extends TestCase
         $login2 = $this->loginService->initiateLogin($storeId2, $shop2);
 
         // Both stores must be activated
-        $store1 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId1]);
-        $store2 = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId2]);
-        $this->assertNotNull($store1);
-        $this->assertNotNull($store2);
-
-        $passDec1 = self::$encryption->decrypt((string) $store1['encrypted_password']);
-        $passDec2 = self::$encryption->decrypt((string) $store2['encrypted_password']);
+        $store1 = $this->requireStore($storeId1);
+        $store2 = $this->requireStore($storeId2);
+        $passDec1 = $this->passwordOf($store1);
+        $passDec2 = $this->passwordOf($store2);
 
         $expectedT3_1 = Protocol::token3($login1['nonce'], 'admin1@test.com', 'Admin1', '1', 'true', $passDec1);
         $auth1 = $this->loginService->handleAutologin($login1['sessionId'], [
@@ -356,8 +352,7 @@ final class LifecycleTest extends TestCase
             ['past' => time() - 10, 'sid' => $loginResult['sessionId']],
         );
 
-        $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $password = self::$encryption->decrypt((string) $store['encrypted_password']);
+        $password = $this->passwordOf($this->requireStore($storeId));
         $expectedToken3 = Protocol::token3(
             $loginResult['nonce'],
             'admin@test.com',
@@ -396,8 +391,7 @@ final class LifecycleTest extends TestCase
 
         $loginResult = $this->loginService->initiateLogin($storeId, $shop);
 
-        $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $storePass = self::$encryption->decrypt((string) $store['encrypted_password']);
+        $storePass = $this->passwordOf($this->requireStore($storeId));
         $expectedToken3 = Protocol::token3(
             $loginResult['nonce'],
             'admin@test.com',
@@ -454,16 +448,16 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop, $token, $storeId);
         $this->loginService->initiateLogin($storeId, $shop);
 
-        $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $this->assertNotNull($store);
-        $passDec = self::$encryption->decrypt((string) $store['encrypted_password']);
+        $passDec = $this->passwordOf($this->requireStore($storeId));
 
-        // Uninstall
-        $this->uninstallService->handleUninstall($shop, $passDec, $storeId);
+        // Uninstall, then the same callback again: no credentials left, same password is a no-op.
+        $this->assertTrue($this->uninstallService->handleUninstall($shop, $passDec, $storeId));
+        $this->assertFalse($this->uninstallService->handleUninstall($shop, $passDec, $storeId));
         $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
 
-        // Verify candidates are gone
-        $this->assertNull(self::$db->fetch('SELECT * FROM install_candidates WHERE store_id = :id', ['id' => $storeId]));
+        $this->assertNull(
+            self::$db->fetch('SELECT * FROM install_candidates WHERE store_id = :id', ['id' => $storeId]),
+        );
     }
 
     #[TestDox('reinstall creates new password generation after uninstall')]
@@ -479,11 +473,11 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop, $token1, $storeId);
         $this->loginService->initiateLogin($storeId, $shop);
 
-        $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $this->assertSame(1, (int) $store['generation']);
+        $store = $this->requireStore($storeId);
+        $this->assertSame(1, (int) $this->storeField($store, 'generation'));
 
         // Uninstall first
-        $passDec1 = self::$encryption->decrypt((string) $store['encrypted_password']);
+        $passDec1 = $this->passwordOf($store);
         $this->uninstallService->handleUninstall($shop, $passDec1, $storeId);
         $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
 
@@ -495,13 +489,22 @@ final class LifecycleTest extends TestCase
         $this->installationService->handleInstall($shop, $token2, $storeId);
         $this->loginService->initiateLogin($storeId, $shop);
 
-        $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
-        $this->assertSame(2, (int) $store['generation']);
-        $this->assertSame('Updated', $store['title']);
+        $store = $this->requireStore($storeId);
+        $this->assertSame(2, (int) $this->storeField($store, 'generation'));
+        $this->assertSame('Updated', $this->storeField($store, 'title'));
 
         // Old sessions should be invalidated
-        $decryptedNew = self::$encryption->decrypt((string) $store['encrypted_password']);
+        $decryptedNew = $this->passwordOf($store);
         $this->assertNotSame($password1, $decryptedNew);
+
+        try {
+            $this->uninstallService->handleUninstall($shop, $passDec1, $storeId);
+            self::fail('Old password must not remove the new installation');
+        } catch (\InvalidArgumentException) {
+            $this->assertNotNull(
+                self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]),
+            );
+        }
     }
 
     #[TestDox('store identity mismatch during verification rejects candidate')]
@@ -517,12 +520,178 @@ final class LifecycleTest extends TestCase
 
         $this->installationService->handleInstall($shop, $token, $storeId);
 
-        // Login should fail because account.id doesn't match
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Store identity mismatch');
-        $this->loginService->initiateLogin($storeId, $shop);
+        try {
+            $this->loginService->initiateLogin($storeId, $shop);
+            self::fail('Identity mismatch must reject the candidate');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('Store identity mismatch', $e->getMessage());
+        }
 
-        // Candidate should be removed, store should not be created
         $this->assertNull(self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]));
+        $this->assertNull(
+            self::$db->fetch('SELECT * FROM install_candidates WHERE store_id = :id', ['id' => $storeId]),
+        );
+    }
+
+    #[TestDox('identical install callback does not consume another candidate')]
+    public function testDuplicateInstallKeepsOneCandidate(): void
+    {
+        $shop = 'test.myshop.ru';
+        $storeId = '42';
+        $first = $this->installationService->handleInstall($shop, 'same-token', $storeId);
+        $second = $this->installationService->handleInstall($shop, 'same-token', $storeId);
+
+        $this->assertSame($first, $second);
+        $rows = self::$db->fetchAll(
+            'SELECT id FROM install_candidates WHERE store_id = :id',
+            ['id' => $storeId],
+        );
+        $this->assertCount(1, $rows);
+    }
+
+    #[TestDox('repeat install after activation does not change generation')]
+    public function testRepeatInstallAfterActivationIsIdempotent(): void
+    {
+        $shop = 'test.myshop.ru';
+        $storeId = '42';
+        $token = 'stable-token';
+        $password = Protocol::installPassword($token, $this->appSecret);
+        self::$simulator->addStore($shop, $password, $storeId, 'Stable');
+
+        $this->installationService->handleInstall($shop, $token, $storeId);
+        $this->loginService->initiateLogin($storeId, $shop);
+        $before = $this->requireStore($storeId);
+
+        $this->installationService->handleInstall($shop, $token, $storeId);
+
+        $after = $this->requireStore($storeId);
+        $this->assertSame(
+            $this->storeField($before, 'generation'),
+            $this->storeField($after, 'generation'),
+        );
+        $this->assertSame($this->passwordOf($before), $this->passwordOf($after));
+        $this->assertNull(
+            self::$db->fetch('SELECT id FROM install_candidates WHERE store_id = :id', ['id' => $storeId]),
+        );
+    }
+
+    #[TestDox('uninstall removes every pending candidate with the same password')]
+    public function testUninstallRemovesAllMatchingCandidates(): void
+    {
+        $shop = 'test.myshop.ru';
+        $storeId = '42';
+        $password = Protocol::installPassword('same-token', $this->appSecret);
+        $other = Protocol::installPassword('other-token', $this->appSecret);
+
+        for ($i = 1; $i <= 5; $i++) {
+            $this->insertCandidate($storeId, $shop, $password, $i);
+        }
+        $this->insertCandidate($storeId, $shop, $other, 6);
+
+        $removed = $this->uninstallService->handleUninstall($shop, $password, $storeId);
+        $this->assertTrue($removed);
+
+        $left = self::$db->fetchAll(
+            'SELECT encrypted_password FROM install_candidates WHERE store_id = :id',
+            ['id' => $storeId],
+        );
+        $this->assertCount(1, $left);
+        $remaining = $left[0] ?? null;
+        if (!is_array($remaining)) {
+            self::fail('Expected the candidate with a different password to remain');
+        }
+        $this->assertSame($other, $this->passwordOf($remaining));
+
+        $replay = $this->uninstallService->handleUninstall($shop, $password, $storeId);
+        $this->assertFalse($replay);
+        $this->assertCount(1, self::$db->fetchAll(
+            'SELECT id FROM install_candidates WHERE store_id = :id',
+            ['id' => $storeId],
+        ));
+    }
+
+    #[TestDox('stale pending candidates free the install quota')]
+    public function testStaleCandidatesDoNotBlockInstall(): void
+    {
+        $shop = 'test.myshop.ru';
+        $storeId = '42';
+        for ($i = 0; $i < 5; $i++) {
+            $this->installationService->handleInstall($shop, 'old-' . $i, $storeId);
+        }
+        self::$db->execute(
+            'UPDATE install_candidates SET created_at = :created WHERE store_id = :id',
+            ['created' => time() - 90000, 'id' => $storeId],
+        );
+
+        $this->installationService->handleInstall($shop, 'fresh-token', $storeId);
+
+        $rows = self::$db->fetchAll(
+            'SELECT id FROM install_candidates WHERE store_id = :id',
+            ['id' => $storeId],
+        );
+        $this->assertCount(1, $rows);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function requireStore(string $storeId): array
+    {
+        $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
+        if ($store === null) {
+            self::fail('Store not found: ' . $storeId);
+        }
+        return $store;
+    }
+
+    /**
+     * @param array<string, mixed> $store
+     */
+    private function passwordOf(array $store): string
+    {
+        return self::$encryption->decrypt($this->storeField($store, 'encrypted_password'));
+    }
+
+    /**
+     * @param array<string, mixed> $store
+     */
+    private function storeField(array $store, string $key): string
+    {
+        $value = $store[$key] ?? null;
+        if (is_int($value)) {
+            return (string) $value;
+        }
+        if (!is_string($value)) {
+            self::fail('Missing store field ' . $key);
+        }
+        return $value;
+    }
+
+    private function insertCandidate(string $storeId, string $shop, string $password, int $generation): void
+    {
+        $id = 'candidate-' . $generation;
+        self::$db->execute(
+            'INSERT INTO install_candidates (id, store_id, shop, encrypted_password, candidate_version, created_at)
+             VALUES (:id, :store_id, :shop, :password, :version, :created)',
+            [
+                'id' => $id,
+                'store_id' => $storeId,
+                'shop' => $shop,
+                'password' => self::$encryption->encrypt($password),
+                'version' => $generation,
+                'created' => time(),
+            ],
+        );
+        self::$db->execute(
+            'INSERT INTO installation_generations (store_id, generation, status, candidate_id, created_at)
+             VALUES (:store_id, :generation, :status, :candidate_id, :created)',
+            [
+                'store_id' => $storeId,
+                'generation' => $generation,
+                'status' => 'reserved',
+                'candidate_id' => $id,
+                'created' => time(),
+            ],
+        );
     }
 }

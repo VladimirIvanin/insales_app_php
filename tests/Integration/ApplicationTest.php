@@ -24,9 +24,7 @@ use Slim\App;
 final class ApplicationTest extends TestCase
 {
     /** @var App<\Psr\Container\ContainerInterface> */
-    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private App $app;
-    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private Database $db;
 
     protected function setUp(): void
@@ -219,6 +217,42 @@ final class ApplicationTest extends TestCase
         $this->assertSame(500, $response->getStatusCode());
     }
 
+    #[TestDox('repeated identical install stays 200 and keeps one candidate')]
+    public function testDuplicateInstallDoesNotConsumeQuota(): void
+    {
+        for ($i = 0; $i < 6; $i++) {
+            $response = $this->request('GET', '/install', [
+                'shop' => 'test.myshop.ru',
+                'token' => 'same-token',
+                'insales_id' => '55555',
+            ]);
+            $this->assertSame(200, $response->getStatusCode());
+        }
+
+        $candidates = $this->db->fetchAll(
+            'SELECT id FROM install_candidates WHERE store_id = :sid',
+            ['sid' => '55555'],
+        );
+        $this->assertCount(1, $candidates);
+    }
+
+    #[TestDox('invalid shop on /login is plain text and does not echo the parameter')]
+    public function testLoginRejectsShopWithoutReflection(): void
+    {
+        $shop = '<script>document.title="review-xss-executed"</script>';
+        $response = $this->request('GET', '/login', [
+            'shop' => $shop,
+            'insales_id' => '1',
+        ]);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame('text/plain; charset=utf-8', $response->getHeaderLine('Content-Type'));
+        $this->assertSame('nosniff', $response->getHeaderLine('X-Content-Type-Options'));
+        $body = (string) $response->getBody();
+        $this->assertSame('Login verification failed', $body);
+        $this->assertStringNotContainsString($shop, $body);
+    }
+
     #[TestDox('install stores candidate without creating job')]
     public function testInstallWithoutJob(): void
     {
@@ -264,6 +298,7 @@ final class ApplicationTest extends TestCase
         $this->db->execute('DELETE FROM sessions');
         $this->db->execute('DELETE FROM jobs');
         $this->db->execute('DELETE FROM installation_generations');
+        $this->db->execute('DELETE FROM uninstall_tombstones');
     }
 
     /**

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Application;
 
-use InSales\Protocol;
 use InSales\ShopValidator;
 use Infrastructure\Database;
 use Infrastructure\Encryption;
@@ -12,22 +11,19 @@ use Infrastructure\Encryption;
 /**
  * Service handling application uninstall.
  *
- * Verifies uninstall token (which is the store password),
- * atomically removes credentials, invalidates sessions, challenges,
- * and pending install candidates.
+ * Token — готовый пароль подключения. Сравнение и удаление выполняются
+ * в одной транзакции: снимаются все кандидаты и активная установка
+ * с этим паролем. Записи с другим паролем не изменяются.
  *
- * Re-delivery: repeated uninstall for already removed store returns 200
- * (idempotent). Old uninstall callback after reinstall is rejected because
- * token comparison uses the old password which won't match the new generation.
- *
- * Авторизация uninstall выполняется внутри транзакции, чтобы исключить
- * race condition между проверкой token и cleanup.
- * При наличии candidate проверяется token по его credential,
- * а не по активной store, чтобы uninstall для нового поколения
- * не был ошибочно отвергнут.
+ * Повтор того же пароля после удаления подтверждается по ограниченному
+ * tombstone (хеш, не сам пароль) и отвечает успехом, ничего не удаляя.
+ * При новом поколении старый пароль не считается доверенным.
  */
 final readonly class UninstallService
 {
+    private const TOMBSTONE_TTL = 2592000;
+    private const TOMBSTONE_LIMIT = 5;
+
     /**
      * @param array<int, string> $allowedShops
      */
@@ -42,14 +38,7 @@ final readonly class UninstallService
     /**
      * Handle uninstall callback from InSales.
      *
-     * Всегда чистит install_candidates, generations и jobs для store_id/shop,
-     * даже если строки stores ещё нет (неактивированная установка).
-     * Вся проверка авторизации — внутри транзакции.
-     *
-     * Авторизация по паролю active store — полная очистка (stores, sessions, candidates, generations).
-     * Авторизация по паролю кандидата — удаляет только этот кандидат и его reserved поколение.
-     *
-     * @return bool True if uninstall was processed, false if nothing to remove (and token matches — no-op)
+     * @return bool True when credentials were removed, false on idempotent replay
      * @throws \InvalidArgumentException
      */
     public function handleUninstall(string $shop, string $token, string $insalesId): bool
@@ -60,75 +49,48 @@ final readonly class UninstallService
             throw new \InvalidArgumentException('insales_id must be numeric');
         }
 
-        // Вся проверка авторизации и cleanup — в одной транзакции
-        $processed = false;
-        $authorized = false;
-        $matchedCandidateId = null;
-
-        $this->db->transaction(function () use ($insalesId, $shop, $token, &$processed, &$authorized, &$matchedCandidateId) {
-            // 1. Пытаемся авторизоваться по активной store
+        $removed = $this->db->transaction(function () use ($insalesId, $shop, $token): bool {
             /** @var array{encrypted_password: string}|null $store */
             $store = $this->db->fetch(
-                'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
+                'SELECT encrypted_password FROM stores WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $insalesId, 'shop' => $shop],
             );
 
+            $storeMatches = false;
             if ($store !== null) {
                 $storePassword = $this->encryption->decrypt($store['encrypted_password']);
-                if (hash_equals($storePassword, $token)) {
-                    $authorized = true;
-                    $processed = true;
+                $storeMatches = $this->sameSecret($storePassword, $token);
+            }
 
-                    $this->db->execute(
-                        'DELETE FROM sessions WHERE store_id = :store_id',
-                        ['store_id' => $insalesId],
-                    );
+            /** @var array<int, array{encrypted_password: string, id: string}> $candidates */
+            $candidates = $this->db->fetchAll(
+                'SELECT id, encrypted_password FROM install_candidates
+                 WHERE store_id = :store_id AND shop = :shop',
+                ['store_id' => $insalesId, 'shop' => $shop],
+            );
 
-                    $this->db->execute(
-                        'DELETE FROM pending_logins WHERE store_id = :store_id',
-                        ['store_id' => $insalesId],
-                    );
-
-                    $this->db->execute(
-                        'DELETE FROM stores WHERE store_id = :store_id',
-                        ['store_id' => $insalesId],
-                    );
+            $matchedCandidateIds = [];
+            foreach ($candidates as $candidate) {
+                $candidatePassword = $this->encryption->decrypt($candidate['encrypted_password']);
+                if ($this->sameSecret($candidatePassword, $token)) {
+                    $matchedCandidateIds[] = $candidate['id'];
                 }
             }
 
-            // 2. Если не авторизовались по store, пробуем по candidate
-            // Перебираем ВСЕ candidates: при нескольких pending один из них может
-            // иметь правильный пароль.
-            if (!$authorized) {
-                /** @var array<int, array{encrypted_password: string, id: string}> $candidates */
-                $candidates = $this->db->fetchAll(
-                    'SELECT * FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
-                    ['store_id' => $insalesId, 'shop' => $shop],
-                );
-
-                foreach ($candidates as $candidate) {
-                    $candidatePassword = $this->encryption->decrypt($candidate['encrypted_password']);
-                    if (hash_equals($candidatePassword, $token)) {
-                        $authorized = true;
-                        $matchedCandidateId = $candidate['id'];
-                        break;
-                    }
+            if (!$storeMatches && $matchedCandidateIds === []) {
+                // Tombstone подтверждает повтор уже снятого пароля и ничего не удаляет.
+                // При живой установке с другим паролем старый token не доверенный.
+                if ($store === null && $this->tombstoneMatches($insalesId, $shop, $token)) {
+                    return false;
                 }
-            }
-
-            if (!$authorized) {
                 throw new \InvalidArgumentException('Invalid uninstall token');
             }
 
-            if ($matchedCandidateId !== null) {
-                // Uninstall по паролю кандидата (активная установка ещё не завершена):
-                // удаляем только совпавший кандидат и его reserved поколение.
-                // Active поколение и чужих кандидатов не трогаем.
+            foreach ($matchedCandidateIds as $matchedCandidateId) {
                 $this->db->execute(
                     'DELETE FROM install_candidates WHERE id = :id',
                     ['id' => $matchedCandidateId],
                 );
-
                 $this->db->execute(
                     'UPDATE installation_generations SET status = :cancelled
                      WHERE store_id = :store_id AND candidate_id = :candidate_id AND status = :reserved',
@@ -139,25 +101,21 @@ final readonly class UninstallService
                         'reserved' => 'reserved',
                     ],
                 );
-            } else {
-                // Uninstall по паролю активной store — полная очистка
-                $this->db->execute(
-                    'DELETE FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
-                    ['store_id' => $insalesId, 'shop' => $shop],
-                );
+            }
 
-                // Cancel pending generations
+            if ($storeMatches) {
                 $this->db->execute(
-                    'UPDATE installation_generations SET status = :cancelled
-                     WHERE store_id = :store_id AND status = :reserved',
-                    [
-                        'cancelled' => 'cancelled',
-                        'store_id' => $insalesId,
-                        'reserved' => 'reserved',
-                    ],
+                    'DELETE FROM sessions WHERE store_id = :store_id',
+                    ['store_id' => $insalesId],
                 );
-
-                // Отменяем активное поколение
+                $this->db->execute(
+                    'DELETE FROM pending_logins WHERE store_id = :store_id',
+                    ['store_id' => $insalesId],
+                );
+                $this->db->execute(
+                    'DELETE FROM stores WHERE store_id = :store_id',
+                    ['store_id' => $insalesId],
+                );
                 $this->db->execute(
                     'UPDATE installation_generations SET status = :cancelled
                      WHERE store_id = :store_id AND status = :active',
@@ -168,8 +126,79 @@ final readonly class UninstallService
                     ],
                 );
             }
+
+            $this->rememberTombstone($insalesId, $shop, $token);
+            return true;
         });
 
-        return $processed;
+        return $removed === true;
+    }
+
+    private function sameSecret(string $left, string $right): bool
+    {
+        return strlen($left) === strlen($right) && hash_equals($left, $right);
+    }
+
+    private function tombstoneMatches(string $storeId, string $shop, string $password): bool
+    {
+        $hash = $this->encryption->fingerprint($password);
+        $row = $this->db->fetch(
+            'SELECT 1 FROM uninstall_tombstones
+             WHERE store_id = :store_id AND shop = :shop AND password_hash = :password_hash
+               AND created_at >= :cutoff',
+            [
+                'store_id' => $storeId,
+                'shop' => $shop,
+                'password_hash' => $hash,
+                'cutoff' => time() - self::TOMBSTONE_TTL,
+            ],
+        );
+
+        return $row !== null;
+    }
+
+    private function rememberTombstone(string $storeId, string $shop, string $password): void
+    {
+        $hash = $this->encryption->fingerprint($password);
+        $now = time();
+        $this->db->execute(
+            'INSERT INTO uninstall_tombstones (store_id, shop, password_hash, created_at)
+             VALUES (:store_id, :shop, :password_hash, :created_at)
+             ON CONFLICT(store_id, shop, password_hash) DO UPDATE SET created_at = excluded.created_at',
+            [
+                'store_id' => $storeId,
+                'shop' => $shop,
+                'password_hash' => $hash,
+                'created_at' => $now,
+            ],
+        );
+        $this->db->execute(
+            'DELETE FROM uninstall_tombstones
+             WHERE store_id = :store_id AND shop = :shop AND created_at < :cutoff',
+            [
+                'store_id' => $storeId,
+                'shop' => $shop,
+                'cutoff' => $now - self::TOMBSTONE_TTL,
+            ],
+        );
+
+        /** @var array<int, array{password_hash: string}> $rows */
+        $rows = $this->db->fetchAll(
+            'SELECT password_hash FROM uninstall_tombstones
+             WHERE store_id = :store_id AND shop = :shop
+             ORDER BY created_at DESC',
+            ['store_id' => $storeId, 'shop' => $shop],
+        );
+        foreach (array_slice($rows, self::TOMBSTONE_LIMIT) as $row) {
+            $this->db->execute(
+                'DELETE FROM uninstall_tombstones
+                 WHERE store_id = :store_id AND shop = :shop AND password_hash = :password_hash',
+                [
+                    'store_id' => $storeId,
+                    'shop' => $shop,
+                    'password_hash' => $row['password_hash'],
+                ],
+            );
+        }
     }
 }

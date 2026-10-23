@@ -89,7 +89,7 @@ final class PlatformSimulator
             2 => ['pipe', 'w'],  // stderr
         ];
 
-        $this->process = @proc_open(
+        $process = @proc_open(
             $cmd,
             $descriptors,
             $this->pipes,
@@ -98,15 +98,12 @@ final class PlatformSimulator
             ['bypass_shell' => true],
         );
 
-        if ($this->process === false) {
+        if ($process === false) {
             $this->cleanup();
             throw new \RuntimeException('Failed to start platform simulator');
         }
 
-        if (!is_resource($this->process)) {
-            $this->cleanup();
-            throw new \RuntimeException('Failed to start platform simulator');
-        }
+        $this->process = $process;
 
         // Close stdin immediately
         fclose($this->pipes[0]);
@@ -116,7 +113,7 @@ final class PlatformSimulator
         $maxWait = 20;
         for ($i = 0; $i < $maxWait; $i++) {
             $fp = @fsockopen($this->host, $this->port, $errno, $errstr, 1);
-            if ($fp) {
+            if ($fp !== false) {
                 fclose($fp);
                 $this->running = true;
                 return $this->baseUrl;
@@ -137,7 +134,7 @@ final class PlatformSimulator
      */
     public function stop(): void
     {
-        if ($this->process !== null && $this->process !== false) {
+        if ($this->process !== null) {
             // Close pipes
             foreach ($this->pipes as $pipe) {
                 if (is_resource($pipe)) {
@@ -150,8 +147,8 @@ final class PlatformSimulator
 
             // Give it time to shut down
             for ($i = 0; $i < 5; $i++) {
-                $status = @proc_get_status($this->process);
-                if ($status === false || !$status['running']) {
+                $status = proc_get_status($this->process);
+                if ($status['running'] === false) {
                     break;
                 }
                 usleep(100_000);
@@ -234,8 +231,14 @@ final class PlatformSimulator
      * @param bool $disconnect Whether to disconnect without response
      * @param int $delay Delay in ms before responding
      */
-    public function respondNext(string $method, string $path, int $status = 200, mixed $body = null, bool $disconnect = false, int $delay = 0): void
-    {
+    public function respondNext(
+        string $method,
+        string $path,
+        int $status = 200,
+        mixed $body = null,
+        bool $disconnect = false,
+        int $delay = 0,
+    ): void {
         $state = $this->readState();
         $state['scripted_responses'][] = [
             'method' => $method,

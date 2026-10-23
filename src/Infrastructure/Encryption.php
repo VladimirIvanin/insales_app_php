@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Infrastructure;
 
 /**
- * Encrypt/decrypt store passwords using libsodium (XSalsa20-Poly1305).
+ * Encrypt/decrypt store passwords using libsodium secretbox (XSalsa20-Poly1305).
  *
  * Key must be 32 random bytes, provided as hex-encoded string via environment.
  * Sodium uses a nonce + key for authenticated encryption (sodium_crypto_secretbox).
@@ -72,5 +72,15 @@ final readonly class Encryption
         }
 
         return $plaintext;
+    }
+
+    /**
+     * Keyed fingerprint of a secret for comparison without storing it.
+     *
+     * Used for uninstall tombstones: the password itself is not retained.
+     */
+    public function fingerprint(string $plaintext): string
+    {
+        return sodium_bin2hex(sodium_crypto_generichash($plaintext, $this->key, 32));
     }
 }

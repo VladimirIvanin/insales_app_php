@@ -21,13 +21,16 @@ use Infrastructure\Encryption;
  * - Each install attempt reserves a generation via installation_generations table
  * - Reserve, candidate save are in ONE write transaction
  * - prepareAndActivate checks candidate freshness before activation
- * - Uninstall cancels all pending generations for the store
- * - Max 5 pending candidates per store to prevent abuse
+ * - Одинаковый пароль не создаёт второго кандидата и не меняет активное поколение
+ * - Непроверенные кандидаты старше суток освобождают квоту при следующем install
+ * - Неподписанный callback не заменяет уже проверенные credentials
+ * - До 5 свежих непроверенных кандидатов на магазин
  */
 final readonly class InstallationService
 {
     private const MAX_SHOP_LENGTH = 255;
     private const MAX_PENDING_CANDIDATES = 5;
+    private const PENDING_CANDIDATE_TTL = 86400;
 
     /**
      * @param array<int, string> $allowedShops
@@ -49,7 +52,7 @@ final readonly class InstallationService
      * @param string $shop Shop domain
      * @param string $token Install token from InSales
      * @param string $insalesId Store numeric ID
-     * @return string Candidate ID for tracking
+     * @return string Id кандидата либо store id, если такой пароль уже активирован
      */
     public function handleInstall(string $shop, string $token, string $insalesId): string
     {
@@ -68,28 +71,54 @@ final readonly class InstallationService
         }
 
         $password = Protocol::installPassword($token, $this->appSecret);
-        $candidateId = bin2hex(random_bytes(32));
-        $encryptedPassword = $this->encryption->encrypt($password);
 
-        // Всё в одной транзакции: резервирование поколения + кандидат
-        $this->db->transaction(function () use ($shop, $insalesId, $candidateId, $encryptedPassword) {
-            // Если есть активное поколение — новый install не нужен.
-            // Повторная установка возможна только после uninstall.
-            /** @var array<string, mixed>|null $activeGen */
-            $activeGen = $this->db->fetch(
-                'SELECT 1 FROM installation_generations
-                 WHERE store_id = :store_id AND status = :active
-                 LIMIT 1',
-                ['store_id' => $insalesId, 'active' => 'active'],
+        // Квота, дедуп и запись — в одной транзакции. Сравнение идёт по
+        // расшифрованному паролю: ciphertext каждый раз получает новый nonce.
+        $savedId = $this->db->transaction(function () use ($shop, $insalesId, $password): string {
+            /** @var array{store_id: string, shop: string, encrypted_password: string}|null $store */
+            $store = $this->db->fetch(
+                'SELECT store_id, shop, encrypted_password FROM stores WHERE store_id = :store_id',
+                ['store_id' => $insalesId],
             );
-            if ($activeGen !== null) {
+            if ($store !== null) {
+                if ($store['shop'] !== $shop) {
+                    throw new \InvalidArgumentException('Store id is already installed for another shop');
+                }
+                $storePassword = $this->encryption->decrypt($store['encrypted_password']);
+                if ($this->sameSecret($storePassword, $password)) {
+                    return $store['store_id'];
+                }
                 throw new \InvalidArgumentException(
-                    "Store {$insalesId} already has an active installation. "
-                    . 'Uninstall first before reinstalling.'
+                    'Store already has an active installation. Uninstall first before reinstalling.'
                 );
             }
 
-            // Лимит незавершённых кандидатов
+            // Активное поколение без строки stores не должно блокировать новую установку.
+            $this->db->execute(
+                'UPDATE installation_generations SET status = :cancelled
+                 WHERE store_id = :store_id AND status = :active',
+                [
+                    'cancelled' => 'cancelled',
+                    'store_id' => $insalesId,
+                    'active' => 'active',
+                ],
+            );
+
+            $this->expireStaleCandidates($insalesId);
+
+            /** @var array<int, array{id: string, encrypted_password: string}> $candidates */
+            $candidates = $this->db->fetchAll(
+                'SELECT id, encrypted_password FROM install_candidates
+                 WHERE store_id = :store_id AND shop = :shop',
+                ['store_id' => $insalesId, 'shop' => $shop],
+            );
+            foreach ($candidates as $candidate) {
+                $existingPassword = $this->encryption->decrypt($candidate['encrypted_password']);
+                if ($this->sameSecret($existingPassword, $password)) {
+                    return $candidate['id'];
+                }
+            }
+
             /** @var array{cnt: int}|null $pendingRow */
             $pendingRow = $this->db->fetch(
                 'SELECT COUNT(*) as cnt FROM install_candidates WHERE store_id = :store_id',
@@ -103,6 +132,9 @@ final readonly class InstallationService
                     . 'Complete or remove existing candidates first.'
                 );
             }
+
+            $candidateId = bin2hex(random_bytes(32));
+            $encryptedPassword = $this->encryption->encrypt($password);
 
             // candidate_version: монотонно возрастающий номер (сохраняется, т.к. считаем по MAX)
             /** @var array{v: int}|null $maxRow */
@@ -147,9 +179,15 @@ final readonly class InstallationService
                     'created_at' => time(),
                 ],
             );
+
+            return $candidateId;
         });
 
-        return $candidateId;
+        if (!is_string($savedId) || $savedId === '') {
+            throw new \RuntimeException('Install was not saved');
+        }
+
+        return $savedId;
     }
 
     /**
@@ -218,30 +256,27 @@ final readonly class InstallationService
                 );
             }
             // Permanent auth failure — reject this candidate only
-            $this->db->execute(
-                'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND candidate_id = :candidate_id AND status = :reserved',
-                ['cancelled' => 'cancelled', 'store_id' => $insalesId, 'candidate_id' => $candidateId, 'reserved' => 'reserved'],
-            );
-            $this->db->execute('DELETE FROM install_candidates WHERE id = :id', ['id' => $candidateId]);
+            $this->rejectCandidate($insalesId, $candidateId);
             throw new \InvalidArgumentException('Install verification failed: ' . $e->getMessage());
         }
 
         $returnedId = (string) ($account['id'] ?? '');
         if ($returnedId !== $insalesId) {
-            // Wrong account — reject
-            $this->db->execute(
-                'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND candidate_id = :candidate_id AND status = :reserved',
-                ['cancelled' => 'cancelled', 'store_id' => $insalesId, 'candidate_id' => $candidateId, 'reserved' => 'reserved'],
-            );
-            $this->db->execute('DELETE FROM install_candidates WHERE id = :id', ['id' => $candidateId]);
+            $this->rejectCandidate($insalesId, $candidateId);
             throw new \InvalidArgumentException('Store identity mismatch during install verification');
         }
 
         // 3. Activate inside write transaction
         $activated = null;
-        $this->db->transaction(function () use ($candidateId, $insalesId, $shop, $password, $genGeneration, $account, &$activated) {
+        $this->db->transaction(function () use (
+            $candidateId,
+            $insalesId,
+            $shop,
+            $password,
+            $genGeneration,
+            $account,
+            &$activated,
+        ) {
             // Re-read candidate within transaction
             /** @var array{gen_status: string}|null $current */
             $current = $this->db->fetch(
@@ -316,47 +351,30 @@ final readonly class InstallationService
         return $activated;
     }
 
-    /**
-     * Cancel a generation (called from uninstall).
-     */
-    public function cancelGeneration(string $storeId): void
+    private function sameSecret(string $left, string $right): bool
     {
-        $this->db->transaction(function () use ($storeId) {
-            // Cancel all reserved candidates and generations
-            $candidates = $this->db->fetchAll(
-                'SELECT id FROM install_candidates WHERE store_id = :store_id',
-                ['store_id' => $storeId],
-            );
-
-            foreach ($candidates as $candidate) {
-                $this->db->execute(
-                    'DELETE FROM install_candidates WHERE id = :id',
-                    ['id' => $candidate['id']],
-                );
-            }
-
-            // Cancel pending generations
-            $this->db->execute(
-                'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND status = :reserved',
-                [
-                    'cancelled' => 'cancelled',
-                    'store_id' => $storeId,
-                    'reserved' => 'reserved',
-                ],
-            );
-        });
+        return strlen($left) === strlen($right) && hash_equals($left, $right);
     }
 
     /**
-     * Clean up a candidate and its generation link.
-     *
-     * @internal Используется JobQueue::onFinalFail для очистки при исчерпании retries.
-     *           Не предназначен для внешнего вызова — меняет состояние generations.
+     * Drop unverified candidates older than the pending TTL and free their quota.
      */
-    public function cleanupCandidate(string $candidateId, string $storeId): void
+    private function expireStaleCandidates(string $storeId): void
     {
-        // Cancel abandoned generations
+        $cutoff = time() - self::PENDING_CANDIDATE_TTL;
+        /** @var array<int, array{id: string}> $stale */
+        $stale = $this->db->fetchAll(
+            'SELECT id FROM install_candidates WHERE store_id = :store_id AND created_at < :cutoff',
+            ['store_id' => $storeId, 'cutoff' => $cutoff],
+        );
+
+        foreach ($stale as $row) {
+            $this->rejectCandidate($storeId, $row['id']);
+        }
+    }
+
+    private function rejectCandidate(string $storeId, string $candidateId): void
+    {
         $this->db->execute(
             'UPDATE installation_generations SET status = :cancelled
              WHERE store_id = :store_id AND candidate_id = :candidate_id AND status = :reserved',
@@ -367,7 +385,6 @@ final readonly class InstallationService
                 'reserved' => 'reserved',
             ],
         );
-
         $this->db->execute(
             'DELETE FROM install_candidates WHERE id = :id',
             ['id' => $candidateId],

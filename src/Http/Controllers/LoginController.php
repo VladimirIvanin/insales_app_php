@@ -9,7 +9,6 @@ use Application\LoginService;
 use Http\Middleware\SessionMiddleware;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
-use Slim\Psr7\Response;
 
 final readonly class LoginController
 {
@@ -35,8 +34,7 @@ final readonly class LoginController
         $insalesId = $params['insales_id'] ?? '';
 
         if ($shop === '' || $insalesId === '') {
-            $response->getBody()->write('Missing shop or insales_id');
-            return $response->withStatus(400);
+            return $this->plain($response, 'Missing shop or insales_id', 400);
         }
 
         try {
@@ -48,16 +46,12 @@ final readonly class LoginController
             return $response
                 ->withStatus(302)
                 ->withHeader('Location', $result['redirectUrl']);
-        } catch (LoginException | \InvalidArgumentException $e) {
-            $response->getBody()->write('Login error: ' . $e->getMessage());
-            return $response->withStatus(400);
-        } catch (\RuntimeException $e) {
-            // Temporary API error during install verification
-            $response->getBody()->write('Service temporarily unavailable');
-            return $response->withStatus(503);
-        } catch (\Throwable $e) {
-            $response->getBody()->write('Internal error');
-            return $response->withStatus(500);
+        } catch (LoginException | \InvalidArgumentException) {
+            return $this->plain($response, 'Login verification failed', 400);
+        } catch (\RuntimeException) {
+            return $this->plain($response, 'Service temporarily unavailable', 503);
+        } catch (\Throwable) {
+            return $this->plain($response, 'Internal error', 500);
         }
     }
 
@@ -74,8 +68,7 @@ final readonly class LoginController
         $sessionId = $cookies[SessionMiddleware::CHALLENGE_COOKIE] ?? '';
 
         if ($sessionId === '' || preg_match('/^[a-f0-9]{64}$/', $sessionId) !== 1) {
-            $response->getBody()->write('Unauthorized');
-            return $response->withStatus(401);
+            return $this->plain($response, 'Unauthorized', 401);
         }
 
         $params = $request->getQueryParams();
@@ -90,13 +83,11 @@ final readonly class LoginController
             return $response
                 ->withStatus(302)
                 ->withHeader('Location', $this->baseUrl . '/');
-        } catch (LoginException $e) {
+        } catch (LoginException) {
             $response = $this->sessionMiddleware->clearChallengeCookie($response);
-            $response->getBody()->write('Login failed: ' . $e->getMessage());
-            return $response->withStatus(401);
-        } catch (\Throwable $e) {
-            $response->getBody()->write('Internal error');
-            return $response->withStatus(500);
+            return $this->plain($response, 'Login failed', 401);
+        } catch (\Throwable) {
+            return $this->plain($response, 'Internal error', 500);
         }
     }
 
@@ -116,5 +107,14 @@ final readonly class LoginController
         return $response
             ->withStatus(302)
             ->withHeader('Location', $this->baseUrl . '/');
+    }
+
+    private function plain(ResponseInterface $response, string $body, int $status): ResponseInterface
+    {
+        $response->getBody()->write($body);
+        return $response
+            ->withStatus($status)
+            ->withHeader('Content-Type', 'text/plain; charset=utf-8')
+            ->withHeader('X-Content-Type-Options', 'nosniff');
     }
 }

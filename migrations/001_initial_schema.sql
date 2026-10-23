@@ -5,7 +5,7 @@
 CREATE TABLE IF NOT EXISTS stores (
     store_id TEXT PRIMARY KEY,         -- insales_id from InSales
     shop TEXT NOT NULL,                 -- normalized shop domain (e.g., demo.myinsales.ru)
-    encrypted_password TEXT NOT NULL,   -- encrypted store password (XChaCha20-Poly1305)
+    encrypted_password TEXT NOT NULL,   -- encrypted store password (XSalsa20-Poly1305)
     title TEXT NOT NULL DEFAULT 'Store',-- store title from account API
     generation INTEGER NOT NULL DEFAULT 1, -- incremented on each reinstall
     installed_at INTEGER NOT NULL       -- unix timestamp
@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_store ON sessions(store_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
--- Job queue for async operations (install verification, etc.)
+-- Legacy table from an earlier queue design. The current app verifies
+-- installation synchronously on /login and does not read or write jobs.
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     queue TEXT NOT NULL DEFAULT 'default',

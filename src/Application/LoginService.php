@@ -250,7 +250,15 @@ final readonly class LoginService
      * Get store by ID and optionally verify shop.
      * Returns store data with decrypted password.
      *
-     * @return array{store_id: string, shop: string, encrypted_password: string, title: string, generation: int, installed_at: int, password: string}
+     * @return array{
+     *     store_id: string,
+     *     shop: string,
+     *     encrypted_password: string,
+     *     title: string,
+     *     generation: int,
+     *     installed_at: int,
+     *     password: string
+     * }
      */
     private function getStore(string $storeId, ?string $shop = null): array
     {

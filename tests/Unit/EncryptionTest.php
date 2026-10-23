@@ -10,10 +10,9 @@ use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
 
 #[CoversClass(Encryption::class)]
-#[TestDox('Encryption (XChaCha20-Poly1305 via sodium)')]
+#[TestDox('Encryption (XSalsa20-Poly1305 via sodium secretbox)')]
 final class EncryptionTest extends TestCase
 {
-    /** @phpstan-ignore-next-line Initialized in setUp() */
     private Encryption $encryption;
 
     protected function setUp(): void

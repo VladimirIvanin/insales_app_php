@@ -22,7 +22,8 @@
         "phpstan/phpstan": "^1.12",
         "phpstan/phpstan-strict-rules": "^1.6",
         "squizlabs/php_codesniffer": "^3.10",
-        "phpstan/extension-installer": "^1.4"
+        "phpstan/extension-installer": "^1.4",
+        "ext-sockets": "*"
     },
     "autoload": {
         "psr-4": {
@@ -41,9 +42,9 @@
         "test": "phpunit",
         "test:unit": "phpunit --testsuite=unit",
         "test:integration": "phpunit --testsuite=integration",
-        "analyse": "phpstan analyse --level=max src/ tests/",
-        "lint": "phpcs --standard=PSR12 --colors src/ tests/",
-        "lint:fix": "phpcbf --standard=PSR12 --colors src/ tests/",
+        "analyse": "phpstan analyse --level=max src/ tests/ public/index.php bin/app.php",
+        "lint": "phpcs",
+        "lint:fix": "phpcbf",
         "audit": "composer audit",
         "check": [
             "@lint",

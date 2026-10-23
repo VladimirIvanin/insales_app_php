@@ -9,7 +9,7 @@ namespace Infrastructure;
  *
  * Supports:
  * - Named parameter binding
- * - Transactions with retry on lock
+ * - Transactions with retry when SQLite is locked
  * - Fetch one / execute
  * - RETURNING support for PostgreSQL-like chaining
  * - SQLite WAL mode for better concurrency
@@ -81,11 +81,16 @@ final readonly class Database
 
     /**
      * Execute a callback within a transaction.
-     * Retries on SQLite lock failure.
+     * Retries the whole callback when SQLite reports a lock (HY000).
+     * The callback result is returned only after commit, so a rolled-back
+     * attempt cannot leak state through by-reference variables.
      *
+     * @template T
+     * @param callable(): T $callback
+     * @return T
      * @throws \Throwable
      */
-    public function transaction(callable $callback): void
+    public function transaction(callable $callback): mixed
     {
         $maxRetries = 3;
         $attempt = 0;
@@ -94,13 +99,15 @@ final readonly class Database
             try {
                 $this->pdo->beginTransaction();
                 try {
-                    $callback();
+                    $result = $callback();
                     $this->pdo->commit();
+                    return $result;
                 } catch (\Throwable $e) {
-                    $this->pdo->rollBack();
+                    if ($this->pdo->inTransaction()) {
+                        $this->pdo->rollBack();
+                    }
                     throw $e;
                 }
-                return;
             } catch (\PDOException $e) {
                 $attempt++;
                 if ($attempt >= $maxRetries || $e->getCode() !== 'HY000') {
@@ -109,6 +116,8 @@ final readonly class Database
                 usleep(100_000 * $attempt); // 100ms, 200ms, 300ms
             }
         }
+
+        throw new \RuntimeException('Database transaction failed');
     }
 
     /**
@@ -129,7 +138,9 @@ final readonly class Database
      */
     public function migrate(array $migrations, int $targetVersion = 0): void
     {
-        $this->pdo->exec('CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER)');
+        $this->pdo->exec(
+            'CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER)'
+        );
 
         $maxAttempts = 3;
         for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {

@@ -20,65 +20,79 @@ final class ProtocolTest extends TestCase
     protected function setUp(): void
     {
         $raw = file_get_contents(__DIR__ . '/../Fixtures/protocol-vectors.json');
-        $this->vectors = is_string($raw) ? json_decode($raw, true) : [];
+        if (!is_string($raw)) {
+            self::fail('Cannot read protocol vectors');
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            self::fail('Protocol vectors are not an object');
+        }
+        /** @var array<string, mixed> $decoded */
+        $this->vectors = $decoded;
     }
 
     #[TestDox('installPassword matches cross-language test vectors')]
     public function testInstallPasswordVector(): void
     {
-        $v = $this->vectors['install'];
-        $password = Protocol::installPassword($v['token'], $v['secret']);
+        $password = Protocol::installPassword(
+            $this->vectorString('install', 'token'),
+            $this->vectorString('install', 'secret'),
+        );
 
-        $this->assertSame($v['expected_password'], $password);
+        $this->assertSame($this->vectorString('install', 'expected_password'), $password);
     }
 
     #[TestDox('token3 matches cross-language test vectors with Cyrillic name')]
     public function testToken3Vector(): void
     {
-        $v = $this->vectors['autologin'];
-        $storePassword = $this->vectors['install']['expected_password'];
-
         $token3 = Protocol::token3(
-            $v['nonce'],
-            $v['email'],
-            $v['name'],
-            $v['user_id'],
-            $v['email_confirmed'],
-            $storePassword,
+            $this->vectorString('autologin', 'nonce'),
+            $this->vectorString('autologin', 'email'),
+            $this->vectorString('autologin', 'name'),
+            $this->vectorString('autologin', 'user_id'),
+            $this->vectorString('autologin', 'email_confirmed'),
+            $this->vectorString('install', 'expected_password'),
         );
 
-        $this->assertSame($v['expected_token3'], $token3);
+        $this->assertSame($this->vectorString('autologin', 'expected_token3'), $token3);
     }
 
     #[TestDox('token2 matches cross-language test vectors')]
     public function testToken2Vector(): void
     {
-        $v = $this->vectors['autologin'];
-        $storePassword = $this->vectors['install']['expected_password'];
-
         $token2 = Protocol::token2(
-            $v['nonce'],
-            $v['email'],
-            $v['name'],
-            $v['user_id'],
-            $storePassword,
+            $this->vectorString('autologin', 'nonce'),
+            $this->vectorString('autologin', 'email'),
+            $this->vectorString('autologin', 'name'),
+            $this->vectorString('autologin', 'user_id'),
+            $this->vectorString('install', 'expected_password'),
         );
 
-        $this->assertSame($v['expected_token2'], $token2);
+        $this->assertSame($this->vectorString('autologin', 'expected_token2'), $token2);
     }
 
     #[TestDox('token matches cross-language test vectors')]
     public function testTokenVector(): void
     {
-        $v = $this->vectors['autologin'];
-        $storePassword = $this->vectors['install']['expected_password'];
-
         $token = Protocol::token(
-            $v['nonce'],
-            $storePassword,
+            $this->vectorString('autologin', 'nonce'),
+            $this->vectorString('install', 'expected_password'),
         );
 
-        $this->assertSame($v['expected_token'], $token);
+        $this->assertSame($this->vectorString('autologin', 'expected_token'), $token);
+    }
+
+    private function vectorString(string $group, string $key): string
+    {
+        $section = $this->vectors[$group] ?? null;
+        if (!is_array($section)) {
+            self::fail('Missing vector group ' . $group);
+        }
+        $value = $section[$key] ?? null;
+        if (!is_string($value)) {
+            self::fail('Vector ' . $group . '.' . $key . ' is not a string');
+        }
+        return $value;
     }
 
     #[TestDox('installPassword produces lowercase 32-char hex')]
