@@ -9,7 +9,6 @@ use Infrastructure\Database;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
-use Psr\Container\ContainerInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Slim\App;
@@ -24,31 +23,40 @@ use Slim\App;
 #[TestDox('HTTP application via AppFactory')]
 final class ApplicationTest extends TestCase
 {
+    /** @var App<\Psr\Container\ContainerInterface> */
+    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private App $app;
+    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private Database $db;
 
     protected function setUp(): void
     {
         $this->app = SlimAppFactory::create(__DIR__ . '/../..');
-        $this->db = $this->app->getContainer()->get(Database::class);
+        /** @var \Psr\Container\ContainerInterface $container */
+        $container = $this->app->getContainer();
+        /** @var Database $db */
+        $db = $container->get(Database::class);
+        $this->db = $db;
 
         // Safety: refuse to clean production-like database paths
-        $dbPathRef = new \ReflectionProperty($this->db, 'pdo');
-        $dbPathRef->setAccessible(true);
+        $pdoRef = new \ReflectionProperty(Database::class, 'pdo');
+        $pdoRef->setAccessible(true);
         /** @var \PDO $pdo */
-        $pdo = $dbPathRef->getValue($this->db);
-        $dbPath = $pdo->query('PRAGMA database_list')->fetch(\PDO::FETCH_ASSOC)['file'] ?? '';
+        $pdo = $pdoRef->getValue($this->db);
+        $stmt = $pdo->query('PRAGMA database_list');
+        /** @var array<string, mixed>|false $row */
+        $row = $stmt !== false ? $stmt->fetch(\PDO::FETCH_ASSOC) : false;
+        $dbPath = '';
+        if ($row !== false && is_array($row)) {
+            // @phpstan-ignore-next-line strval expects scalar|null, mixed given
+            $dbPath = strval($row['file'] ?? '');
+        }
         if (str_contains($dbPath, 'app.sqlite3')) {
             self::fail('Test database points to production path: ' . $dbPath);
         }
 
         // Clean state
-        $this->db->execute('DELETE FROM stores');
-        $this->db->execute('DELETE FROM install_candidates');
-        $this->db->execute('DELETE FROM pending_logins');
-        $this->db->execute('DELETE FROM sessions');
-        $this->db->execute('DELETE FROM jobs');
-        $this->db->execute('DELETE FROM installation_generations');
+        $this->cleanDatabase();
     }
 
     #[TestDox('GET /install with missing params returns 400 (InvalidArgumentException)')]
@@ -174,8 +182,12 @@ final class ApplicationTest extends TestCase
         $this->assertCount(2, $gens);
         $this->assertSame('reserved', $gens[0]['status']);
         $this->assertSame('reserved', $gens[1]['status']);
-        $this->assertSame(1, (int) $gens[0]['generation']);
-        $this->assertSame(2, (int) $gens[1]['generation']);
+        /** @var int|string $gen0 */
+        $gen0 = $gens[0]['generation'];
+        /** @var int|string $gen1 */
+        $gen1 = $gens[1]['generation'];
+        $this->assertSame(1, (int) $gen0);
+        $this->assertSame(2, (int) $gen1);
 
         // Должно быть 2 кандидата
         $candidates = $this->db->fetchAll(
@@ -218,6 +230,7 @@ final class ApplicationTest extends TestCase
         $this->assertSame(200, $response->getStatusCode());
 
         // Проверяем, что кандидат создан
+        /** @var array<int, array<string, mixed>> $candidates */
         $candidates = $this->db->fetchAll(
             'SELECT * FROM install_candidates WHERE store_id = :sid',
             ['sid' => '11111'],
@@ -228,13 +241,29 @@ final class ApplicationTest extends TestCase
         // Проверяем, что jobs не созданы (нет worker)
         $hasJobsTable = false;
         try {
+            /** @var array<int, array<string, mixed>> $jobs */
             $jobs = $this->db->fetchAll('SELECT COUNT(*) as c FROM jobs');
             $hasJobsTable = true;
-            $this->assertSame(0, (int) $jobs[0]['c']);
+            /** @var int|string $jobCount */
+            $jobCount = $jobs[0]['c'] ?? 0;
+            $this->assertSame(0, (int) $jobCount);
         } catch (\PDOException) {
             // jobs table may not exist yet in test setup — acceptable
             $this->assertFalse($hasJobsTable, 'jobs table should not be queried');
         }
+    }
+
+    /**
+     * Clean database state between tests.
+     */
+    private function cleanDatabase(): void
+    {
+        $this->db->execute('DELETE FROM stores');
+        $this->db->execute('DELETE FROM install_candidates');
+        $this->db->execute('DELETE FROM pending_logins');
+        $this->db->execute('DELETE FROM sessions');
+        $this->db->execute('DELETE FROM jobs');
+        $this->db->execute('DELETE FROM installation_generations');
     }
 
     /**

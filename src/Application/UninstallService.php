@@ -67,13 +67,14 @@ final readonly class UninstallService
 
         $this->db->transaction(function () use ($insalesId, $shop, $token, &$processed, &$authorized, &$matchedCandidateId) {
             // 1. Пытаемся авторизоваться по активной store
+            /** @var array{encrypted_password: string}|null $store */
             $store = $this->db->fetch(
                 'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $insalesId, 'shop' => $shop],
             );
 
             if ($store !== null) {
-                $storePassword = $this->encryption->decrypt((string) $store['encrypted_password']);
+                $storePassword = $this->encryption->decrypt($store['encrypted_password']);
                 if (hash_equals($storePassword, $token)) {
                     $authorized = true;
                     $processed = true;
@@ -99,16 +100,17 @@ final readonly class UninstallService
             // Перебираем ВСЕ candidates: при нескольких pending один из них может
             // иметь правильный пароль.
             if (!$authorized) {
+                /** @var array<int, array{encrypted_password: string, id: string}> $candidates */
                 $candidates = $this->db->fetchAll(
                     'SELECT * FROM install_candidates WHERE store_id = :store_id AND shop = :shop',
                     ['store_id' => $insalesId, 'shop' => $shop],
                 );
 
                 foreach ($candidates as $candidate) {
-                    $candidatePassword = $this->encryption->decrypt((string) $candidate['encrypted_password']);
+                    $candidatePassword = $this->encryption->decrypt($candidate['encrypted_password']);
                     if (hash_equals($candidatePassword, $token)) {
                         $authorized = true;
-                        $matchedCandidateId = (string) $candidate['id'];
+                        $matchedCandidateId = $candidate['id'];
                         break;
                     }
                 }

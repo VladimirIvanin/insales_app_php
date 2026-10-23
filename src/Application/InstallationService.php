@@ -75,6 +75,7 @@ final readonly class InstallationService
         $this->db->transaction(function () use ($shop, $insalesId, $candidateId, $encryptedPassword) {
             // Если есть активное поколение — новый install не нужен.
             // Повторная установка возможна только после uninstall.
+            /** @var array<string, mixed>|null $activeGen */
             $activeGen = $this->db->fetch(
                 'SELECT 1 FROM installation_generations
                  WHERE store_id = :store_id AND status = :active
@@ -89,10 +90,12 @@ final readonly class InstallationService
             }
 
             // Лимит незавершённых кандидатов
-            $pendingCount = (int) ($this->db->fetch(
+            /** @var array{cnt: int}|null $pendingRow */
+            $pendingRow = $this->db->fetch(
                 'SELECT COUNT(*) as cnt FROM install_candidates WHERE store_id = :store_id',
                 ['store_id' => $insalesId],
-            )['cnt'] ?? 0);
+            );
+            $pendingCount = $pendingRow['cnt'] ?? 0;
 
             if ($pendingCount >= self::MAX_PENDING_CANDIDATES) {
                 throw new \RuntimeException(
@@ -102,17 +105,21 @@ final readonly class InstallationService
             }
 
             // candidate_version: монотонно возрастающий номер (сохраняется, т.к. считаем по MAX)
-            $currentMaxVersion = (int) ($this->db->fetch(
+            /** @var array{v: int}|null $maxRow */
+            $maxRow = $this->db->fetch(
                 'SELECT MAX(candidate_version) as v FROM install_candidates WHERE store_id = :store_id',
                 ['store_id' => $insalesId],
-            )['v'] ?? 0);
+            );
+            $currentMaxVersion = $maxRow['v'] ?? 0;
             $candidateVersion = $currentMaxVersion + 1;
 
             // Резервируем поколение
-            $currentGen = (int) ($this->db->fetch(
+            /** @var array{g: int}|null $genRow */
+            $genRow = $this->db->fetch(
                 'SELECT COALESCE(MAX(generation), 0) as g FROM installation_generations WHERE store_id = :store_id',
                 ['store_id' => $insalesId],
-            )['g'] ?? 0);
+            );
+            $currentGen = $genRow['g'] ?? 0;
             $newGeneration = $currentGen + 1;
 
             $this->db->execute(
@@ -162,6 +169,7 @@ final readonly class InstallationService
         $shop = ShopValidator::validate($shop, $this->allowedShops, $this->allowHttp);
 
         // 1. Find the newest pending candidate for this shop+store
+        /** @var array{id: string, encrypted_password: string, gen_generation: int}|null $candidate */
         $candidate = $this->db->fetch(
             'SELECT c.*, ig.generation as gen_generation, ig.status as gen_status
              FROM install_candidates c
@@ -174,18 +182,19 @@ final readonly class InstallationService
 
         // No candidate — check if store is already active
         if ($candidate === null) {
+            /** @var array{store_id: string, generation: int}|null $store */
             $store = $this->db->fetch(
                 'SELECT store_id, generation FROM stores WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $insalesId, 'shop' => $shop],
             );
             return $store !== null
-                ? ['store_id' => (string) $store['store_id'], 'generation' => (int) $store['generation']]
+                ? ['store_id' => $store['store_id'], 'generation' => $store['generation']]
                 : null;
         }
 
-        $candidateId = (string) $candidate['id'];
-        $encryptedPassword = (string) $candidate['encrypted_password'];
-        $genGeneration = (int) $candidate['gen_generation'];
+        $candidateId = $candidate['id'];
+        $encryptedPassword = $candidate['encrypted_password'];
+        $genGeneration = $candidate['gen_generation'];
         $password = $this->encryption->decrypt($encryptedPassword);
 
         // 2. Verify via API (outside write transaction)
@@ -234,6 +243,7 @@ final readonly class InstallationService
         $activated = null;
         $this->db->transaction(function () use ($candidateId, $insalesId, $shop, $password, $genGeneration, $account, &$activated) {
             // Re-read candidate within transaction
+            /** @var array{gen_status: string}|null $current */
             $current = $this->db->fetch(
                 'SELECT c.id, ig.status as gen_status
                  FROM install_candidates c
@@ -242,18 +252,19 @@ final readonly class InstallationService
                 ['id' => $candidateId],
             );
 
-            if ($current === null || ((string) ($current['gen_status'] ?? '')) !== 'reserved') {
+            if ($current === null || $current['gen_status'] !== 'reserved') {
                 return; // Cancelled by concurrent uninstall
             }
 
             // Check no newer active generation exists
+            /** @var array{generation: int}|null $activeGen */
             $activeGen = $this->db->fetch(
                 'SELECT generation FROM installation_generations
                  WHERE store_id = :store_id AND status = :active
                  ORDER BY generation DESC LIMIT 1',
                 ['store_id' => $insalesId, 'active' => 'active'],
             );
-            if ($activeGen !== null && (int) $activeGen['generation'] >= $genGeneration) {
+            if ($activeGen !== null && $activeGen['generation'] >= $genGeneration) {
                 return; // Already activated by concurrent request
             }
 

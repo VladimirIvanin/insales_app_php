@@ -57,8 +57,9 @@ function loadMigrations(string $rootDir): array
 function getCurrentVersion(Database $db): int
 {
     try {
+        /** @var array{v: int}|null $row */
         $row = $db->fetch('SELECT MAX(version) as v FROM _schema_version');
-        return (int) ($row['v'] ?? 0);
+        return $row['v'] ?? 0;
     } catch (\PDOException) {
         return 0;
     }
@@ -235,7 +236,9 @@ function handleDoctor(array $args, string $rootDir, Config $config): void
                 }
 
                 // Check store count
-                $storeCount = (int) ($db->fetch('SELECT COUNT(*) as c FROM stores')['c'] ?? 0);
+                /** @var array{c: int}|null $countRow */
+                $countRow = $db->fetch('SELECT COUNT(*) as c FROM stores');
+                $storeCount = $countRow['c'] ?? 0;
                 echo "   Active stores: {$storeCount}\n";
             } catch (\PDOException $e) {
                 echo "   ERROR: {$e->getMessage()}\n";
@@ -274,10 +277,11 @@ function handleDoctor(array $args, string $rootDir, Config $config): void
                     $allowHttp = $config->getString('APP_ENV', 'development') === 'test';
 
                     foreach ($stores as $store) {
-                        $shop = (string) $store['shop'];
-                        $encPass = (string) $store['encrypted_password'];
-                        $storeId = (string) $store['store_id'];
-                        $title = (string) ($store['title'] ?? '?');
+                        /** @var array{shop: string, encrypted_password: string, store_id: string, title?: string} $store */
+                        $shop = $store['shop'];
+                        $encPass = $store['encrypted_password'];
+                        $storeId = $store['store_id'];
+                        $title = $store['title'] ?? '?';
 
                         try {
                             $password = $encryption->decrypt($encPass);

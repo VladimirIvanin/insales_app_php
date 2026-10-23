@@ -13,10 +13,8 @@ use Http\Controllers\InstallController;
 use Http\Controllers\LoginController;
 use Http\Controllers\UninstallController;
 use Http\Middleware\SessionMiddleware;
-use Infrastructure\Config;
-use Infrastructure\Database;
-use Infrastructure\Encryption;
 use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
 
 /**
  * Единая фабрика DI-контейнера для HTTP (index.php) и CLI (bin/app.php).
@@ -45,19 +43,23 @@ final readonly class ContainerFactory
 
         // Infrastructure — Database without auto-migration.
         // Run migrations explicitly: php bin/app.php db upgrade
-        $container->set(Database::class, function () use ($dbPath) {
+        $container->set(Database::class, function () use ($dbPath): Database {
             return new Database($dbPath);
         });
 
-        $container->set(Encryption::class, function () use ($encryptionKey) {
+        $container->set(Encryption::class, function () use ($encryptionKey): Encryption {
             return new Encryption($encryptionKey);
         });
 
         // Application services
-        $container->set(InstallationService::class, function (ContainerInterface $c) use ($appSecret, $appId, $allowedShops, $allowHttp, $baseUrl) {
+        $container->set(InstallationService::class, function (ContainerInterface $c) use ($appSecret, $appId, $allowedShops, $allowHttp, $baseUrl): InstallationService {
+            $db = $c->get(Database::class);
+            assert($db instanceof Database);
+            $encryption = $c->get(Encryption::class);
+            assert($encryption instanceof Encryption);
             return new InstallationService(
-                $c->get(Database::class),
-                $c->get(Encryption::class),
+                $db,
+                $encryption,
                 $appSecret,
                 $appId,
                 $allowedShops,
@@ -66,64 +68,90 @@ final readonly class ContainerFactory
             );
         });
 
-        $container->set(LoginService::class, function (ContainerInterface $c) use ($appId, $baseUrl) {
+        $container->set(LoginService::class, function (ContainerInterface $c) use ($appId, $baseUrl): LoginService {
+            $db = $c->get(Database::class);
+            assert($db instanceof Database);
+            $encryption = $c->get(Encryption::class);
+            assert($encryption instanceof Encryption);
+            $installService = $c->get(InstallationService::class);
+            assert($installService instanceof InstallationService);
             return new LoginService(
-                $c->get(Database::class),
-                $c->get(Encryption::class),
-                $c->get(InstallationService::class),
+                $db,
+                $encryption,
+                $installService,
                 $appId,
                 $baseUrl,
             );
         });
 
-        $container->set(UninstallService::class, function (ContainerInterface $c) use ($allowedShops, $allowHttp) {
+        $container->set(UninstallService::class, function (ContainerInterface $c) use ($allowedShops, $allowHttp): UninstallService {
+            $db = $c->get(Database::class);
+            assert($db instanceof Database);
+            $encryption = $c->get(Encryption::class);
+            assert($encryption instanceof Encryption);
             return new UninstallService(
-                $c->get(Database::class),
-                $c->get(Encryption::class),
+                $db,
+                $encryption,
                 $allowedShops,
                 $allowHttp,
             );
         });
 
         // HTTP layer (только для index.php — worker использует сервисы напрямую)
-        $container->set(SessionMiddleware::class, function (ContainerInterface $c) use ($baseUrl) {
+        $container->set(SessionMiddleware::class, function (ContainerInterface $c) use ($baseUrl): SessionMiddleware {
+            $loginService = $c->get(LoginService::class);
+            assert($loginService instanceof LoginService);
             return new SessionMiddleware(
-                $c->get(LoginService::class),
+                $loginService,
                 $baseUrl,
             );
         });
 
-        $container->set(InstallController::class, function (ContainerInterface $c) {
+        $container->set(InstallController::class, function (ContainerInterface $c): InstallController {
+            $installService = $c->get(InstallationService::class);
+            assert($installService instanceof InstallationService);
             return new InstallController(
-                $c->get(InstallationService::class),
+                $installService,
             );
         });
 
-        $container->set(LoginController::class, function (ContainerInterface $c) use ($baseUrl) {
+        $container->set(LoginController::class, function (ContainerInterface $c) use ($baseUrl): LoginController {
+            $loginService = $c->get(LoginService::class);
+            assert($loginService instanceof LoginService);
+            $sessionMiddleware = $c->get(SessionMiddleware::class);
+            assert($sessionMiddleware instanceof SessionMiddleware);
             return new LoginController(
-                $c->get(LoginService::class),
-                $c->get(SessionMiddleware::class),
+                $loginService,
+                $sessionMiddleware,
                 $baseUrl,
             );
         });
 
-        $container->set(UninstallController::class, function (ContainerInterface $c) {
+        $container->set(UninstallController::class, function (ContainerInterface $c): UninstallController {
+            $uninstallService = $c->get(UninstallService::class);
+            assert($uninstallService instanceof UninstallService);
             return new UninstallController(
-                $c->get(UninstallService::class),
+                $uninstallService,
             );
         });
 
-        $container->set(\Psr\Log\LoggerInterface::class, function () {
+        $container->set(LoggerInterface::class, function (): LoggerInterface {
             return new \Psr\Log\NullLogger();
         });
 
-        $container->set(DashboardController::class, function (ContainerInterface $c) use ($appId, $allowHttp) {
+        $container->set(DashboardController::class, function (ContainerInterface $c) use ($appId, $allowHttp): DashboardController {
+            $db = $c->get(Database::class);
+            assert($db instanceof Database);
+            $encryption = $c->get(Encryption::class);
+            assert($encryption instanceof Encryption);
+            $logger = $c->get(LoggerInterface::class);
+            assert($logger instanceof LoggerInterface);
             return new DashboardController(
                 $appId,
                 $allowHttp,
-                $c->get(Database::class),
-                $c->get(Encryption::class),
-                $c->get(\Psr\Log\LoggerInterface::class),
+                $db,
+                $encryption,
+                $logger,
             );
         });
 

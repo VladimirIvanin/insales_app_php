@@ -6,6 +6,8 @@ namespace InSales;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\RequestOptions;
 use Psr\Log\LoggerInterface;
@@ -339,13 +341,13 @@ final readonly class ApiClient
         // Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to plain IPv4
         if (str_starts_with($ip, '::ffff:')) {
             $ipv4Part = substr($ip, 7);
-            if (filter_var($ipv4Part, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4)) {
+            if (filter_var($ipv4Part, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4) !== false) {
                 return self::isPrivateIPv4($ipv4Part);
             }
         }
 
         // IPv4
-        if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4)) {
+        if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV4) !== false) {
             return self::isPrivateIPv4($ip);
         }
 
@@ -355,7 +357,7 @@ final readonly class ApiClient
         }
 
         // IPv6 private (fc00::/7)
-        if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV6)) {
+        if (filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV6) !== false) {
             $bin = inet_pton($ip);
             if ($bin !== false && (\ord($bin[0]) & 0xfe) === 0xfc) {
                 return true;
@@ -371,7 +373,7 @@ final readonly class ApiClient
      */
     private static function isPrivateIPv4(string $ip): bool
     {
-        return !filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE);
+        return filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE) === false;
     }
 
     private function buildUrl(string $path): string

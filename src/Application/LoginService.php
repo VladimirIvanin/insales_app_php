@@ -116,6 +116,8 @@ final readonly class LoginService
         // Всю проверку и потребление — в одной транзакции для атомарности
         $this->db->transaction(function () use ($sessionId, $params, $authToken, &$resultStoreId) {
             // Читаем challenge внутри транзакции
+            /** @var array{user_email: string, user_name: string, user_id: string, email_confirmed: string, token3: string} $params */
+            /** @var array{expires_at: int, store_id: string, generation: int, nonce: string}|null $pending */
             $pending = $this->db->fetch(
                 'SELECT * FROM pending_logins WHERE session_id = :sid',
                 ['sid' => $sessionId],
@@ -125,15 +127,17 @@ final readonly class LoginService
                 throw new LoginException('Login challenge not found or already used');
             }
 
-            if ((int) $pending['expires_at'] < time()) {
+            $expiresAt = $pending['expires_at'];
+            if ($expiresAt < time()) {
                 throw new LoginException('Login challenge expired');
             }
 
-            $store = $this->getStore((string) $pending['store_id']);
+            $pendingStoreId = $pending['store_id'];
+            $store = $this->getStore($pendingStoreId);
 
             // Проверяем соответствие поколения: challenge связан с поколением
-            $challengeGeneration = (int) ($pending['generation'] ?? 0);
-            $storeGeneration = (int) $store['generation'];
+            $challengeGeneration = $pending['generation'];
+            $storeGeneration = $store['generation'];
             if ($challengeGeneration > 0 && $challengeGeneration !== $storeGeneration) {
                 // Challenge от старого поколения — не принимаем
                 $this->db->execute('DELETE FROM pending_logins WHERE session_id = :sid', ['sid' => $sessionId]);
@@ -141,17 +145,17 @@ final readonly class LoginService
             }
 
             $expectedToken3 = Protocol::token3(
-                (string) $pending['nonce'],
-                (string) ($params['user_email'] ?? ''),
-                (string) ($params['user_name'] ?? ''),
-                (string) ($params['user_id'] ?? ''),
-                (string) ($params['email_confirmed'] ?? 'false'),
-                (string) $store['password'],
+                $pending['nonce'],
+                $params['user_email'] ?? '',
+                $params['user_name'] ?? '',
+                $params['user_id'] ?? '',
+                $params['email_confirmed'] ?? 'false',
+                $store['password'],
             );
 
             $signature = $params['token3'] ?? '';
 
-            if (!preg_match('/^[a-f0-9]{32}$/', $signature)) {
+            if (preg_match('/^[a-f0-9]{32}$/', $signature) !== 1) {
                 throw new LoginException('Invalid token3 format');
             }
 
@@ -183,7 +187,7 @@ final readonly class LoginService
                 [
                     'id' => $authToken,
                     'store_id' => $store['store_id'],
-                    'user_id' => (string) ($params['user_id'] ?? '0'),
+                    'user_id' => $params['user_id'] ?? '0',
                     'generation' => $store['generation'],
                     'expires_at' => time() + self::SESSION_TTL,
                     'created_at' => time(),
@@ -210,6 +214,7 @@ final readonly class LoginService
      */
     public function validateSession(string $authToken): ?array
     {
+        /** @var array{generation: int, store_generation: int}|null $session */
         $session = $this->db->fetch(
             'SELECT s.*, st.shop, st.title, st.generation as store_generation
              FROM sessions s
@@ -223,8 +228,8 @@ final readonly class LoginService
         }
 
         // Check that session generation matches store generation
-        $generation = isset($session['generation']) ? (int) $session['generation'] : 0;
-        $storeGeneration = isset($session['store_generation']) ? (int) $session['store_generation'] : 0;
+        $generation = $session['generation'];
+        $storeGeneration = $session['store_generation'];
         if ($generation !== $storeGeneration) {
             $this->db->execute('DELETE FROM sessions WHERE id = :id', ['id' => $authToken]);
             return null;
@@ -245,16 +250,18 @@ final readonly class LoginService
      * Get store by ID and optionally verify shop.
      * Returns store data with decrypted password.
      *
-     * @return array<string, mixed>
+     * @return array{store_id: string, shop: string, encrypted_password: string, title: string, generation: int, installed_at: int, password: string}
      */
     private function getStore(string $storeId, ?string $shop = null): array
     {
         if ($shop !== null) {
+            /** @var array{store_id: string, shop: string, encrypted_password: string, title: string, generation: int, installed_at: int}|null $store */
             $store = $this->db->fetch(
                 'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $storeId, 'shop' => $shop],
             );
         } else {
+            /** @var array{store_id: string, shop: string, encrypted_password: string, title: string, generation: int, installed_at: int}|null $store */
             $store = $this->db->fetch(
                 'SELECT * FROM stores WHERE store_id = :store_id',
                 ['store_id' => $storeId],
@@ -265,7 +272,7 @@ final readonly class LoginService
             throw new LoginException('Store is not installed');
         }
 
-        $store['password'] = $this->encryption->decrypt((string) $store['encrypted_password']);
+        $store['password'] = $this->encryption->decrypt($store['encrypted_password']);
 
         return $store;
     }

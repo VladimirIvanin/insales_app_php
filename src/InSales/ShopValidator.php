@@ -25,7 +25,7 @@ final readonly class ShopValidator
     {
         $shop = mb_strtolower(trim($shop));
 
-        if (!preg_match('/^([a-z0-9][a-z0-9.\-]*)(?::(\d{1,5}))?$/', $shop, $m)) {
+        if (preg_match('/^([a-z0-9][a-z0-9.\-]*)(?::(\d{1,5}))?$/', $shop, $m) !== 1) {
             throw new \InvalidArgumentException("Invalid shop domain format: {$shop}");
         }
 

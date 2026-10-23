@@ -73,7 +73,7 @@ final readonly class LoginController
         $cookies = $request->getCookieParams();
         $sessionId = $cookies[SessionMiddleware::CHALLENGE_COOKIE] ?? '';
 
-        if ($sessionId === '' || !preg_match('/^[a-f0-9]{64}$/', $sessionId)) {
+        if ($sessionId === '' || preg_match('/^[a-f0-9]{64}$/', $sessionId) !== 1) {
             $response->getBody()->write('Unauthorized');
             return $response->withStatus(401);
         }
@@ -108,7 +108,7 @@ final readonly class LoginController
         $cookies = $request->getCookieParams();
         $authToken = $cookies[SessionMiddleware::COOKIE_NAME] ?? '';
 
-        if ($authToken !== '' && preg_match('/^[a-f0-9]{64}$/', $authToken)) {
+        if ($authToken !== '' && preg_match('/^[a-f0-9]{64}$/', $authToken) === 1) {
             $this->loginService->destroySession($authToken);
         }
 

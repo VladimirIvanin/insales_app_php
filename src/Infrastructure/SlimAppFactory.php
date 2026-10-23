@@ -54,7 +54,6 @@ final readonly class SlimAppFactory
             true,
         );
 
-        /** @phpstan-ignore-next-line */
         $errorMiddleware->setDefaultErrorHandler(function (
             \Psr\Http\Message\ServerRequestInterface $request,
             \Throwable $exception,

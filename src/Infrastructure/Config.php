@@ -27,6 +27,7 @@ final readonly class Config
      */
     public function getString(string $key, string $default = ''): string
     {
+        /** @var string|false|null $value */
         $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
 
         if ($value === false || $value === null) {

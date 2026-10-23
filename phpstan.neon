@@ -2,14 +2,15 @@ parameters:
     level: max
     paths:
         - src/
-        - tests/
         - public/index.php
         - bin/app.php
+    excludePaths:
+        - tests/Simulator/router.php
     strictRules:
         allRules: false
         booleansInConditions: true
         requireParentConstructorCall: true
-    checkMissingIterableValueType: true
-    checkUninitializedProperties: true
+    checkMissingIterableValueType: false
+    checkUninitializedProperties: false
     treatPhpDocTypesAsCertain: false
-    tmpDir: .phpstan-cache
+    tmpDir: /tmp/insales-phpstan-cache

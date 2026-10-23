@@ -61,6 +61,7 @@ final readonly class Database
     {
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
+        /** @var array<string, mixed>|false $row */
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
         return $row !== false && $row !== [] ? $row : null;
     }
@@ -136,7 +137,9 @@ final readonly class Database
                 // Используем IMMEDIATE (уже открывает транзакцию)
                 $this->pdo->exec('BEGIN IMMEDIATE');
 
-                $current = (int) ($this->fetch('SELECT MAX(version) as v FROM _schema_version')['v'] ?? 0);
+                /** @var array{v: int}|null $versionRow */
+                $versionRow = $this->fetch('SELECT MAX(version) as v FROM _schema_version');
+                $current = $versionRow['v'] ?? 0;
                 $target = $targetVersion > 0 ? $targetVersion : \count($migrations);
 
                 $applied = false;

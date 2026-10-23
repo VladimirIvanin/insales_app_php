@@ -34,7 +34,7 @@ final readonly class SessionMiddleware implements MiddlewareInterface
         $cookies = $request->getCookieParams();
         $authToken = $cookies[self::COOKIE_NAME] ?? '';
 
-        if ($authToken === '' || !preg_match('/^[a-f0-9]{64}$/', $authToken)) {
+        if ($authToken === '' || preg_match('/^[a-f0-9]{64}$/', $authToken) !== 1) {
             return $this->unauthorized($request);
         }
 

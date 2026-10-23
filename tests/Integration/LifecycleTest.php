@@ -30,14 +30,15 @@ final class LifecycleTest extends TestCase
     private static string $simulatorUrl;
     private static Database $db;
     private static Encryption $encryption;
+    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private InstallationService $installationService;
+    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private LoginService $loginService;
+    // @phpstan-ignore-next-line property.uninitialized (set in setUp())
     private UninstallService $uninstallService;
 
     private string $appId = 'test-app-id';
     private string $appSecret = 'test-app-secret';
-    /** @var array<int, string> */
-    private array $allowedShops = ['test.myshop.ru', '127.0.0.1'];
 
     public static function setUpBeforeClass(): void
     {
@@ -123,18 +124,25 @@ final class LifecycleTest extends TestCase
         $this->assertNotEmpty($loginResult['nonce']);
         $this->assertNotEmpty($loginResult['sessionId']);
         $this->assertStringContainsString('/admin/applications/', $loginResult['redirectUrl']);
+        $this->assertNotEmpty(self::$simulatorUrl);
+        // @phpstan-ignore-next-line PHPStan doesn't narrow assertNotEmpty to non-empty-string
         $this->assertStringStartsWith(self::$simulatorUrl, $loginResult['redirectUrl']);
 
         // 3. Verify store is now activated
+        /** @var array<string, mixed>|null $store */
         $store = self::$db->fetch('SELECT * FROM stores WHERE store_id = :id', ['id' => $storeId]);
         $this->assertNotNull($store);
         $this->assertSame($shop, $store['shop']);
         $this->assertSame('Test Store', $store['title']);
-        $this->assertSame(1, (int) $store['generation']);
-        $this->assertSame($loginResult['generation'], (int) $store['generation']);
+        /** @var int|string $genVal */
+        $genVal = $store['generation'];
+        $this->assertSame(1, (int) $genVal);
+        $this->assertSame($loginResult['generation'], (int) $genVal);
 
         // 4. Расшифровываем пароль для проверок
-        $decryptedPassword = self::$encryption->decrypt((string) $store['encrypted_password']);
+        /** @var string $encPass */
+        $encPass = $store['encrypted_password'];
+        $decryptedPassword = self::$encryption->decrypt($encPass);
 
         // 5. Выполняем HTTP-запрос редиректа к симулятору и сверяем token3
         $ch = curl_init();
@@ -154,6 +162,7 @@ final class LifecycleTest extends TestCase
         $this->assertSame(302, $httpCode, 'Simulator should respond with 302');
         $this->assertNotNull($redirectUrl, 'Should have redirect URL');
 
+        /** @var array<string, string> $redirectParts */
         $redirectParts = [];
         $redirectQuery = parse_url((string) $redirectUrl, PHP_URL_QUERY);
         if (is_string($redirectQuery)) {
@@ -163,17 +172,28 @@ final class LifecycleTest extends TestCase
         $this->assertArrayHasKey('token3', $redirectParts);
         $this->assertArrayHasKey('user_email', $redirectParts);
 
+        /** @var string $redirectUserEmail */
+        $redirectUserEmail = is_string($redirectParts['user_email'] ?? null) ? $redirectParts['user_email'] : '';
+        /** @var string $redirectUserName */
+        $redirectUserName = is_string($redirectParts['user_name'] ?? null) ? $redirectParts['user_name'] : '';
+        /** @var string $redirectUserId */
+        $redirectUserId = is_string($redirectParts['user_id'] ?? null) ? $redirectParts['user_id'] : '';
+        /** @var string $redirectEmailConfirmed */
+        $redirectEmailConfirmed = is_string($redirectParts['email_confirmed'] ?? null) ? $redirectParts['email_confirmed'] : 'true';
+        /** @var string $redirectToken3 */
+        $redirectToken3 = is_string($redirectParts['token3'] ?? null) ? $redirectParts['token3'] : '';
+
         $expectedToken3FromRedirect = Protocol::token3(
             $loginResult['nonce'],
-            (string) ($redirectParts['user_email'] ?? ''),
-            (string) ($redirectParts['user_name'] ?? ''),
-            (string) ($redirectParts['user_id'] ?? ''),
-            (string) ($redirectParts['email_confirmed'] ?? 'true'),
+            $redirectUserEmail,
+            $redirectUserName,
+            $redirectUserId,
+            $redirectEmailConfirmed,
             $decryptedPassword,
         );
         $this->assertSame(
             $expectedToken3FromRedirect,
-            (string) ($redirectParts['token3'] ?? ''),
+            $redirectToken3,
             'token3 from simulator redirect should match Protocol::token3',
         );
 

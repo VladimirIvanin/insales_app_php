@@ -26,10 +26,11 @@ final readonly class DashboardController
      */
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        /** @var array{title: string, shop: string, store_id: string, generation: int}|null $session */
         $session = $request->getAttribute('session');
 
-        $title = htmlspecialchars((string) ($session['title'] ?? 'Store'), ENT_QUOTES, 'UTF-8');
-        $shop = htmlspecialchars((string) ($session['shop'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $title = htmlspecialchars($session['title'] ?? 'Store', ENT_QUOTES, 'UTF-8');
+        $shop = htmlspecialchars($session['shop'] ?? '', ENT_QUOTES, 'UTF-8');
 
         $html = <<<HTML
 <!DOCTYPE html>
@@ -96,10 +97,11 @@ HTML;
      */
     public function probe(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        /** @var array{shop: string, store_id: string, generation: int}|null $session */
         $session = $request->getAttribute('session');
 
-        $shop = (string) ($session['shop'] ?? '');
-        $storeId = (string) ($session['store_id'] ?? '');
+        $shop = $session['shop'] ?? '';
+        $storeId = $session['store_id'] ?? '';
 
         if ($shop === '' || $storeId === '') {
             return $this->renderHtml($response, 'Session data incomplete', 400);
@@ -110,8 +112,9 @@ HTML;
                 return $this->renderHtml($response, 'Probe service not configured', 500);
             }
 
-            $sessionGen = (int) ($session['generation'] ?? 0);
+            $sessionGen = $session['generation'] ?? 0;
 
+            /** @var array{generation: int, encrypted_password: string}|null $store */
             $store = $this->db->fetch(
                 'SELECT * FROM stores WHERE store_id = :store_id AND shop = :shop',
                 ['store_id' => $storeId, 'shop' => $shop],
@@ -124,12 +127,12 @@ HTML;
             // Проверяем, что поколение магазина совпадает с поколением сессии.
             // Это предотвращает использование пароля от более новой активации
             // для запроса, уже прошедшего middleware со старым поколением.
-            $storeGen = (int) ($store['generation'] ?? 0);
+            $storeGen = $store['generation'] ?? 0;
             if ($storeGen !== $sessionGen) {
                 return $this->renderHtml($response, 'Session generation mismatch — please re-login', 401);
             }
 
-            $password = $this->encryption->decrypt((string) $store['encrypted_password']);
+            $password = $this->encryption->decrypt($store['encrypted_password'] ?? '');
 
             $client = new ApiClient(
                 appId: $this->appId,
