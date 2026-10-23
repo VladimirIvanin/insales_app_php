@@ -27,6 +27,7 @@ use Infrastructure\Encryption;
 // ──────────────────────────────────────────────
 //  Parse arguments
 // ──────────────────────────────────────────────
+$argv = $_SERVER['argv'] ?? [];
 $args = array_slice($argv, 1);
 $command = $args[0] ?? 'help';
 
