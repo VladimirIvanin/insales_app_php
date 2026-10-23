@@ -3,4 +3,5 @@ runtime/
 .env
 .phpunit.cache/
 .phpstan-cache/
+.phpstan-cache-tmp
 *.sqlite3
