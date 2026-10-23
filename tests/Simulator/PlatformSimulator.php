@@ -50,6 +50,12 @@ final class PlatformSimulator
         $this->stop();
     }
 
+    public function requestCount(): int
+    {
+        $count = $this->readState()['request_count'] ?? 0;
+        return is_int($count) ? $count : 0;
+    }
+
     /**
      * Start the simulator and return its base URL.
      *

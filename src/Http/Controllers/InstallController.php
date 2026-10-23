@@ -39,6 +39,9 @@ final readonly class InstallController
             return $response->withStatus(400)
                 ->withHeader('Content-Type', 'text/plain; charset=utf-8')
                 ->withHeader('X-Content-Type-Options', 'nosniff');
+        } catch (\Application\PendingQuotaException) {
+            $response->getBody()->write('Installation verification unavailable; retry later');
+            return $response->withStatus(503)->withHeader('Retry-After', '5');
         } catch (\Throwable $e) {
             $response->getBody()->write('Installation error');
             return $response->withStatus(500)

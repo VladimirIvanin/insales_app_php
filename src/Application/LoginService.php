@@ -89,7 +89,7 @@ final readonly class LoginService
             $host,
             rawurlencode($this->appId),
             rawurlencode($nonce),
-            rawurlencode($this->baseUrl . '/autologin'),
+            rawurlencode($this->baseUrl . '/autologin?flow=' . rawurlencode($nonce)),
             rawurlencode($shop),
         );
 

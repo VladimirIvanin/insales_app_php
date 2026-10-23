@@ -44,6 +44,7 @@ final readonly class ApiClient
         ?ClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
         private ?string $platformBaseUrl = null,
+        private float $timeout = self::REQUEST_TIMEOUT,
     ) {
         $this->httpClient = $httpClient ?? new Client([
             RequestOptions::TIMEOUT => self::REQUEST_TIMEOUT,
@@ -115,7 +116,7 @@ final readonly class ApiClient
         $data = $result['data'];
 
         if (!\is_array($data) || !isset($data['id'])) {
-            throw new ApiException(200, 'Unexpected account response format');
+            throw new ApiException(200, 'Unexpected account response format', isTransient: true);
         }
 
         /** @var array{id: int, title: string} $data */
@@ -187,6 +188,10 @@ final readonly class ApiClient
         try {
             // Используем stream для bounded чтения — предотвращает OOM при больших ответах
             $response = $this->httpClient->request($method, $url, [
+                RequestOptions::TIMEOUT => $this->timeout,
+                RequestOptions::CONNECT_TIMEOUT => min(self::CONNECT_TIMEOUT, $this->timeout),
+                RequestOptions::READ_TIMEOUT => $this->timeout,
+                RequestOptions::HTTP_ERRORS => false,
                 'headers' => $headers,
                 'body' => $requestBody,
                 'stream' => true,
@@ -263,7 +268,7 @@ final readonly class ApiClient
                 isTransient: $temporary,
             );
         } catch (\JsonException $e) {
-            throw new ApiException(200, 'Invalid JSON response: ' . $e->getMessage());
+            throw new ApiException(200, 'Invalid JSON response', isTransient: true);
         } catch (\Throwable $e) {
             throw new ApiException(0, 'Unexpected error: ' . $e->getMessage(), isTransient: true);
         }

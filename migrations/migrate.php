@@ -17,4 +17,5 @@ return [
     5 => file_get_contents(__DIR__ . '/005_add_lease_token.sql'),
     6 => file_get_contents(__DIR__ . '/006_link_challenge_to_generation.sql'),
     7 => file_get_contents(__DIR__ . '/007_backfill_generations_and_tombstones.sql'),
+    8 => file_get_contents(__DIR__ . '/008_verification_budget.sql'),
 ];

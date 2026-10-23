@@ -198,7 +198,6 @@ final class ApplicationTest extends TestCase
     #[TestDox('install with existing candidate exceeds limit')]
     public function testInstallLimitExceeded(): void
     {
-        // Создаём 5 кандидатов (лимит)
         for ($i = 0; $i < 5; $i++) {
             $response = $this->request('GET', '/install', [
                 'shop' => 'test.myshop.ru',
@@ -208,13 +207,17 @@ final class ApplicationTest extends TestCase
             $this->assertSame(200, $response->getStatusCode());
         }
 
-        // 6-й должен вернуть 500 (превышение лимита)
+        $this->db->execute(
+            'INSERT OR REPLACE INTO verification_budgets (shop, window_started, next_attempt_at)
+             VALUES (:shop, :now, :next)',
+            ['shop' => 'test.myshop.ru', 'now' => microtime(true), 'next' => microtime(true) + 60]
+        );
         $response = $this->request('GET', '/install', [
             'shop' => 'test.myshop.ru',
             'token' => 'token-too-many',
             'insales_id' => '55555',
         ]);
-        $this->assertSame(500, $response->getStatusCode());
+        $this->assertSame(503, $response->getStatusCode());
     }
 
     #[TestDox('repeated identical install stays 200 and keeps one candidate')]
@@ -292,6 +295,7 @@ final class ApplicationTest extends TestCase
      */
     private function cleanDatabase(): void
     {
+        $this->db->execute('DELETE FROM verification_budgets');
         $this->db->execute('DELETE FROM stores');
         $this->db->execute('DELETE FROM install_candidates');
         $this->db->execute('DELETE FROM pending_logins');

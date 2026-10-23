@@ -60,6 +60,7 @@ final class LifecycleTest extends TestCase
     protected function setUp(): void
     {
         // Clean database between tests
+        self::$db->execute('DELETE FROM verification_budgets');
         self::$db->execute('DELETE FROM stores');
         self::$db->execute('DELETE FROM install_candidates');
         self::$db->execute('DELETE FROM pending_logins');

@@ -32,6 +32,7 @@ final readonly class DashboardController
         $title = htmlspecialchars($session['title'] ?? 'Store', ENT_QUOTES, 'UTF-8');
         $shop = htmlspecialchars($session['shop'] ?? '', ENT_QUOTES, 'UTF-8');
 
+        $storeId = rawurlencode((string) ($session['store_id'] ?? ''));
         $html = <<<HTML
 <!DOCTYPE html>
 <html lang="ru">
@@ -89,8 +90,8 @@ final readonly class DashboardController
             <div class="status status-ok">Установка подтверждена. Сессия активна.</div>
         </div>
         <div class="nav">
-            <a href="/probe" class="btn btn-primary">Проверить API магазина</a>
-            <form method="post" action="/logout" style="display:inline">
+            <a href="/probe?store_id={$storeId}" class="btn btn-primary">Проверить API магазина</a>
+            <form method="post" action="/logout?store_id={$storeId}" style="display:inline">
                 <button type="submit" class="btn btn-danger">Выйти</button>
             </form>
         </div>
@@ -162,6 +163,7 @@ HTML;
             $accountId = htmlspecialchars((string) ($account['id'] ?? '?'), ENT_QUOTES, 'UTF-8');
             $accountTitle = htmlspecialchars((string) ($account['title'] ?? '?'), ENT_QUOTES, 'UTF-8');
 
+            $storeId = rawurlencode((string) ($session['store_id'] ?? ''));
             $html = <<<HTML
 <!DOCTYPE html>
 <html lang="ru">
@@ -191,7 +193,7 @@ HTML;
         <div class="info-row"><span class="label">Магазин:</span> {$shop}</div>
         <div class="info-row"><span class="label">ID аккаунта:</span> {$accountId}</div>
         <div class="info-row"><span class="label">Название:</span> {$accountTitle}</div>
-        <p><a href="/">Вернуться в приложение</a></p>
+        <p><a href="/?store_id={$storeId}">Вернуться в приложение</a></p>
     </main>
 </body>
 </html>
@@ -201,13 +203,13 @@ HTML;
                 ->withHeader('Cache-Control', 'no-store')
                 ->withHeader('X-Content-Type-Options', 'nosniff');
         } catch (\InSales\ApiException $e) {
-            $this->logger?->error('API probe failed', ['shop' => $shop, 'error' => $e->getMessage()]);
-            $message = 'Ошибка API: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
-            return $this->renderHtml($response, $message, 502);
+            $this->logger?->error('API probe failed', ['shop' => $shop, 'error_type' => get_class($e)]);
+            $message = 'Не удалось получить ответ API магазина. Повторите проверку позже.';
+            return $this->renderHtml($response, $message, 502, $storeId);
         } catch (\Throwable $e) {
-            $this->logger?->error('API probe error', ['shop' => $shop, 'error' => $e->getMessage()]);
-            $message = 'Ошибка: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
-            return $this->renderHtml($response, $message, 502);
+            $this->logger?->error('API probe error', ['shop' => $shop, 'error_type' => get_class($e)]);
+            $message = 'Не удалось выполнить проверку API. Повторите позже.';
+            return $this->renderHtml($response, $message, 502, $storeId);
         }
     }
 
@@ -220,9 +222,14 @@ HTML;
         return $response->withStatus(200);
     }
 
-    private function renderHtml(ResponseInterface $response, string $message, int $status = 200): ResponseInterface
-    {
+    private function renderHtml(
+        ResponseInterface $response,
+        string $message,
+        int $status = 200,
+        string $storeId = '',
+    ): ResponseInterface {
         $escaped = htmlspecialchars($message, ENT_QUOTES, 'UTF-8');
+        $backUrl = $storeId !== '' ? '/?store_id=' . rawurlencode($storeId) : '/';
         $html = <<<HTML
 <!DOCTYPE html>
 <html lang="ru">
@@ -239,7 +246,7 @@ body{
 main{background:white;border-radius:16px;padding:32px}
 </style>
 </head>
-<body><main><p>{$escaped}</p><a href="/">На главную</a></main></body>
+<body><main><p>{$escaped}</p><a href="{$backUrl}">На главную</a></main></body>
 </html>
 HTML;
         $response->getBody()->write($html);

@@ -42,6 +42,7 @@ final readonly class LoginController
 
             // Set the challenge cookie (separate from session)
             $response = $this->sessionMiddleware->setChallengeCookie($response, $result['sessionId']);
+            $response = $this->sessionMiddleware->setFlowCookie($response, $result['nonce'], $result['sessionId']);
 
             return $response
                 ->withStatus(302)
@@ -65,7 +66,11 @@ final readonly class LoginController
     public function autologin(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $cookies = $request->getCookieParams();
-        $sessionId = $cookies[SessionMiddleware::CHALLENGE_COOKIE] ?? '';
+        $flow = $request->getQueryParams()['flow'] ?? '';
+        if (!is_string($flow) || ($flow !== '' && preg_match('/^[a-f0-9]{64}$/', $flow) !== 1)) {
+            return $this->plain($response, 'Unauthorized', 401);
+        }
+        $sessionId = $cookies[$flow !== '' ? 'login_' . $flow : SessionMiddleware::CHALLENGE_COOKIE] ?? '';
 
         if ($sessionId === '' || preg_match('/^[a-f0-9]{64}$/', $sessionId) !== 1) {
             return $this->plain($response, 'Unauthorized', 401);
@@ -77,14 +82,16 @@ final readonly class LoginController
             $result = $this->loginService->handleAutologin($sessionId, $params);
 
             // Clear challenge, set authenticated session
-            $response = $this->sessionMiddleware->clearChallengeCookie($response);
+            $response = $flow !== '' ? $this->sessionMiddleware->clearFlowCookie($response, $flow)
+                : $this->sessionMiddleware->clearChallengeCookie($response);
             $response = $this->sessionMiddleware->setSessionCookie($response, $result['authToken']);
 
             return $response
                 ->withStatus(302)
-                ->withHeader('Location', $this->baseUrl . '/');
+                ->withHeader('Location', $this->baseUrl . '/?store_id=' . rawurlencode($result['storeId']));
         } catch (LoginException) {
-            $response = $this->sessionMiddleware->clearChallengeCookie($response);
+            $response = $flow !== '' ? $this->sessionMiddleware->clearFlowCookie($response, $flow)
+                : $this->sessionMiddleware->clearChallengeCookie($response);
             return $this->plain($response, 'Login failed', 401);
         } catch (\Throwable) {
             return $this->plain($response, 'Internal error', 500);

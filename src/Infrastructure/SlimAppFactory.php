@@ -9,6 +9,7 @@ use Http\Controllers\InstallController;
 use Http\Controllers\LoginController;
 use Http\Controllers\UninstallController;
 use Http\Middleware\SessionMiddleware;
+use Psr\Container\ContainerInterface;
 use Slim\App;
 use Slim\Factory\AppFactory;
 use Slim\Psr7\Response;
@@ -33,12 +34,12 @@ final readonly class SlimAppFactory
      * @param string $rootDir Абсолютный путь корня проекта
      * @return App<\Psr\Container\ContainerInterface>
      */
-    public static function create(string $rootDir): App
+    public static function create(string $rootDir, ?ContainerInterface $container = null): App
     {
         $config = new Config($rootDir);
         $appEnv = $config->getString('APP_ENV', 'development');
 
-        $container = ContainerFactory::create($rootDir);
+        $container ??= ContainerFactory::create($rootDir);
         AppFactory::setContainer($container);
         /** @var App<\Psr\Container\ContainerInterface> $app */
         $app = AppFactory::create();

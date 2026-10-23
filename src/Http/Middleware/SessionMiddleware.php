@@ -43,6 +43,13 @@ final readonly class SessionMiddleware implements MiddlewareInterface
             return $this->unauthorized($request);
         }
 
+        $expected = $request->getQueryParams()['store_id'] ?? null;
+        if ($expected !== null && (!is_string($expected) || $expected !== $session['store_id'])) {
+            $response = new \Slim\Psr7\Response();
+            $response->getBody()->write('Другая вкладка сменила магазин. Откройте приложение из нужного магазина.');
+            return $response->withStatus(409)->withHeader('Content-Type', 'text/plain; charset=utf-8');
+        }
+
         $request = $request->withAttribute('session', $session)
             ->withAttribute('store', $session);
 
@@ -60,9 +67,12 @@ final readonly class SessionMiddleware implements MiddlewareInterface
     private function unauthorized(ServerRequestInterface $request): ResponseInterface
     {
         $response = new \Slim\Psr7\Response();
-        $response->getBody()->write('Unauthorized');
+         $response->getBody()->write(
+             '<!doctype html><html lang="ru"><meta charset="utf-8"><title>Требуется вход</title>'
+             . '<main><h1>Требуется вход</h1><p>Откройте приложение из раздела расширений InSales.</p></main></html>'
+         );
         return $response->withStatus(401)
-            ->withHeader('Content-Type', 'text/plain; charset=utf-8');
+            ->withHeader('Content-Type', 'text/html; charset=utf-8');
     }
 
     /**
@@ -79,6 +89,16 @@ final readonly class SessionMiddleware implements MiddlewareInterface
     public function setChallengeCookie(ResponseInterface $response, string $sessionId): ResponseInterface
     {
         return $this->setCookie($response, self::CHALLENGE_COOKIE, $sessionId, self::CHALLENGE_TTL);
+    }
+
+    public function setFlowCookie(ResponseInterface $response, string $flow, string $sessionId): ResponseInterface
+    {
+        return $this->setCookie($response, 'login_' . $flow, $sessionId, self::CHALLENGE_TTL);
+    }
+
+    public function clearFlowCookie(ResponseInterface $response, string $flow): ResponseInterface
+    {
+        return $this->clearCookie($response, 'login_' . $flow);
     }
 
     /**

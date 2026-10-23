@@ -12,8 +12,12 @@ use Infrastructure\Database;
 use Infrastructure\Encryption;
 
 /**
+ * @phpstan-type ValidInspection array{status: 'valid', account: array{id: int, title: string}}
+ * @phpstan-type InvalidInspection array{status: 'invalid'}
+ * @phpstan-type UnavailableInspection array{status: 'unavailable'}
+ *
  * Service handling the installation lifecycle:
- * 1. Receive install request, reserve generation, create candidate (no API call)
+ * 1. Receive install request, reserve generation, create candidate (bounded backlog verification when full)
  * 2. Verify candidate via API during /login (synchronous)
  * 3. Activate verified connection
  *
@@ -72,39 +76,56 @@ final readonly class InstallationService
 
         $password = Protocol::installPassword($token, $this->appSecret);
 
-        // Квота, дедуп и запись — в одной транзакции. Сравнение идёт по
-        // расшифрованному паролю: ciphertext каждый раз получает новый nonce.
+        try {
+            return $this->saveCandidate($shop, $insalesId, $password);
+        } catch (PendingQuotaException) {
+            $deadline = microtime(true) + 2;
+            /** @var array<int, array{id: string, store_id: string, shop: string, encrypted_password: string}> $backlog */
+            $backlog = $this->db->fetchAll(
+                'SELECT * FROM install_candidates WHERE shop = :shop ORDER BY created_at, candidate_version',
+                ['shop' => $shop],
+            );
+            foreach ($backlog as $candidate) {
+                $remaining = $deadline - microtime(true);
+                if ($remaining <= 0) {
+                    break;
+                }
+                $result = $this->inspectCandidate($candidate, $remaining);
+                if ($result['status'] === 'invalid') {
+                    $this->db->transaction(fn () => $this->rejectCandidate($candidate['store_id'], $candidate['id']));
+                    return $this->saveCandidate($shop, $insalesId, $password);
+                }
+                if ($result['status'] === 'unavailable') {
+                    break;
+                }
+            }
+            throw new PendingQuotaException('Installation verification unavailable; retry later');
+        }
+    }
+
+    private function saveCandidate(string $shop, string $insalesId, string $password): string
+    {
         $savedId = $this->db->transaction(function () use ($shop, $insalesId, $password): string {
             /** @var array{store_id: string, shop: string, encrypted_password: string}|null $store */
             $store = $this->db->fetch(
                 'SELECT store_id, shop, encrypted_password FROM stores WHERE store_id = :store_id',
                 ['store_id' => $insalesId],
             );
-            if ($store !== null) {
-                if ($store['shop'] !== $shop) {
-                    throw new \InvalidArgumentException('Store id is already installed for another shop');
-                }
+            if ($store !== null && $store['shop'] === $shop) {
                 $storePassword = $this->encryption->decrypt($store['encrypted_password']);
                 if ($this->sameSecret($storePassword, $password)) {
                     return $store['store_id'];
                 }
-                throw new \InvalidArgumentException(
-                    'Store already has an active installation. Uninstall first before reinstalling.'
+            }
+            if ($store === null) {
+                $this->db->execute(
+                    'UPDATE installation_generations SET status = :cancelled WHERE store_id = :store_id
+                     AND status = :active',
+                    ['cancelled' => 'cancelled', 'store_id' => $insalesId, 'active' => 'active'],
                 );
             }
 
-            // Активное поколение без строки stores не должно блокировать новую установку.
-            $this->db->execute(
-                'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND status = :active',
-                [
-                    'cancelled' => 'cancelled',
-                    'store_id' => $insalesId,
-                    'active' => 'active',
-                ],
-            );
-
-            $this->expireStaleCandidates($insalesId);
+            $this->expireStaleCandidates($shop);
 
             /** @var array<int, array{id: string, encrypted_password: string}> $candidates */
             $candidates = $this->db->fetchAll(
@@ -121,13 +142,13 @@ final readonly class InstallationService
 
             /** @var array{cnt: int}|null $pendingRow */
             $pendingRow = $this->db->fetch(
-                'SELECT COUNT(*) as cnt FROM install_candidates WHERE store_id = :store_id',
-                ['store_id' => $insalesId],
+                'SELECT COUNT(*) as cnt FROM install_candidates WHERE shop = :shop',
+                ['shop' => $shop],
             );
             $pendingCount = $pendingRow['cnt'] ?? 0;
 
             if ($pendingCount >= self::MAX_PENDING_CANDIDATES) {
-                throw new \RuntimeException(
+                throw new PendingQuotaException(
                     "Too many pending install candidates for store {$insalesId}. "
                     . 'Complete or remove existing candidates first.'
                 );
@@ -207,7 +228,7 @@ final readonly class InstallationService
         $shop = ShopValidator::validate($shop, $this->allowedShops, $this->allowHttp);
 
         // 1. Find the newest pending candidate for this shop+store
-        /** @var array{id: string, encrypted_password: string, gen_generation: int}|null $candidate */
+        /** @var array{id: string, store_id: string, shop: string, encrypted_password: string, gen_generation: int}|null $candidate */
         $candidate = $this->db->fetch(
             'SELECT c.*, ig.generation as gen_generation, ig.status as gen_status
              FROM install_candidates c
@@ -231,34 +252,23 @@ final readonly class InstallationService
         }
 
         $candidateId = $candidate['id'];
-        $encryptedPassword = $candidate['encrypted_password'];
         $genGeneration = $candidate['gen_generation'];
-        $password = $this->encryption->decrypt($encryptedPassword);
-
-        // 2. Verify via API (outside write transaction)
-        try {
-            $client = new ApiClient(
-                appId: $this->appId,
-                shop: $shop,
-                password: $password,
-                allowHttp: $this->allowHttp,
-                logger: new \Psr\Log\NullLogger(),
-                platformBaseUrl: $this->platformBaseUrl,
-            );
-
-            $account = $client->getAccount();
-        } catch (ApiException $e) {
-            if ($e->isTemporary()) {
-                throw new \RuntimeException(
-                    'Temporary API error: ' . $e->getMessage(),
-                    (int) $e->getCode(),
-                    $e,
-                );
-            }
-            // Permanent auth failure — reject this candidate only
-            $this->rejectCandidate($insalesId, $candidateId);
-            throw new \InvalidArgumentException('Install verification failed: ' . $e->getMessage());
+        $password = $this->encryption->decrypt($candidate['encrypted_password']);
+        $observedOwner = $this->db->fetch(
+            'SELECT store_id, generation FROM stores WHERE shop = :shop',
+            ['shop' => $shop],
+        );
+        $inspection = $this->inspectCandidate($candidate);
+        if ($inspection['status'] === 'unavailable') {
+            throw new \RuntimeException('Temporary API error; retry later');
         }
+        if ($inspection['status'] === 'invalid') {
+            $this->db->transaction(fn () => $this->rejectCandidate($insalesId, $candidateId));
+            throw new \InvalidArgumentException(
+                'Install verification failed: Store identity mismatch or credentials rejected'
+            );
+        }
+        $account = $inspection['account'];
 
         $returnedId = (string) ($account['id'] ?? '');
         if ($returnedId !== $insalesId) {
@@ -275,6 +285,7 @@ final readonly class InstallationService
             $password,
             $genGeneration,
             $account,
+            $observedOwner,
             &$activated,
         ) {
             // Re-read candidate within transaction
@@ -302,6 +313,27 @@ final readonly class InstallationService
             if ($activeGen !== null && $activeGen['generation'] >= $genGeneration) {
                 return; // Already activated by concurrent request
             }
+
+            $owner = $this->db->fetch('SELECT store_id, generation FROM stores WHERE shop = :shop', ['shop' => $shop]);
+            if ($owner !== null && $owner['store_id'] !== $insalesId) {
+                if ($owner !== $observedOwner) {
+                    return;
+                }
+                $oldId = $owner['store_id'];
+                $this->db->execute('DELETE FROM sessions WHERE store_id = :id', ['id' => $oldId]);
+                $this->db->execute('DELETE FROM pending_logins WHERE store_id = :id', ['id' => $oldId]);
+                $this->db->execute('DELETE FROM stores WHERE store_id = :id', ['id' => $oldId]);
+                $this->db->execute(
+                    "UPDATE installation_generations SET status = 'cancelled'
+                     WHERE store_id = :id AND status = 'active'",
+                    ['id' => $oldId],
+                );
+            }
+            $this->db->execute(
+                "UPDATE installation_generations SET status = 'cancelled'
+                 WHERE store_id = :id AND status = 'active' AND generation < :generation",
+                ['id' => $insalesId, 'generation' => $genGeneration],
+            );
 
             $encryptedPassword = $this->encryption->encrypt($password);
             $title = mb_substr((string) ($account['title'] ?? 'Store'), 0, 255);
@@ -334,8 +366,11 @@ final readonly class InstallationService
             // Cancel other reserved generations
             $this->db->execute(
                 'UPDATE installation_generations SET status = :cancelled
-                 WHERE store_id = :store_id AND status = :reserved',
-                ['cancelled' => 'cancelled', 'store_id' => $insalesId, 'reserved' => 'reserved'],
+                 WHERE store_id = :store_id AND status = :reserved AND generation < :generation',
+                [
+                    'cancelled' => 'cancelled', 'store_id' => $insalesId,
+                    'reserved' => 'reserved', 'generation' => $genGeneration,
+                ],
             );
 
             // Invalidate old sessions and challenges
@@ -351,6 +386,47 @@ final readonly class InstallationService
         return $activated;
     }
 
+    /** @param array{id: string, store_id: string, shop: string, encrypted_password: string} $candidate
+     * @return ValidInspection|InvalidInspection|UnavailableInspection
+     */
+    private function inspectCandidate(array $candidate, float $timeout = 5): array
+    {
+        $budget = new VerificationBudget($this->db);
+        $permit = $budget->claim($candidate['shop']);
+        if ($permit === null) {
+            return ['status' => 'unavailable'];
+        }
+        $delay = 0.0;
+        try {
+            $client = new ApiClient(
+                appId: $this->appId,
+                shop: $candidate['shop'],
+                password: $this->encryption->decrypt($candidate['encrypted_password']),
+                allowHttp: $this->allowHttp,
+                platformBaseUrl: $this->platformBaseUrl,
+                timeout: $timeout
+            );
+            $account = $client->getAccount();
+            return (string) $account['id'] === (string) $candidate['store_id']
+                ? ['status' => 'valid', 'account' => $account]
+                : ['status' => 'invalid'];
+        } catch (ApiException $e) {
+            if (in_array($e->status, [401, 403], true)) {
+                return ['status' => 'invalid'];
+            }
+            $delay = 5.0;
+            if ($e->retryAfter !== null) {
+                $seconds = is_numeric($e->retryAfter)
+                    ? (float) $e->retryAfter
+                    : (float) (strtotime($e->retryAfter) - time());
+                $delay = max($delay, $seconds);
+            }
+            return ['status' => 'unavailable'];
+        } finally {
+            $budget->release($candidate['shop'], $permit, $delay);
+        }
+    }
+
     private function sameSecret(string $left, string $right): bool
     {
         return strlen($left) === strlen($right) && hash_equals($left, $right);
@@ -359,17 +435,17 @@ final readonly class InstallationService
     /**
      * Drop unverified candidates older than the pending TTL and free their quota.
      */
-    private function expireStaleCandidates(string $storeId): void
+    private function expireStaleCandidates(string $shop): void
     {
         $cutoff = time() - self::PENDING_CANDIDATE_TTL;
-        /** @var array<int, array{id: string}> $stale */
+        /** @var array<int, array{id: string, store_id: string}> $stale */
         $stale = $this->db->fetchAll(
-            'SELECT id FROM install_candidates WHERE store_id = :store_id AND created_at < :cutoff',
-            ['store_id' => $storeId, 'cutoff' => $cutoff],
+            'SELECT id, store_id FROM install_candidates WHERE shop = :shop AND created_at < :cutoff',
+            ['shop' => $shop, 'cutoff' => $cutoff],
         );
 
         foreach ($stale as $row) {
-            $this->rejectCandidate($storeId, $row['id']);
+            $this->rejectCandidate($row['store_id'], $row['id']);
         }
     }
 
